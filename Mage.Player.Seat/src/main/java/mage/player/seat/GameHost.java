@@ -636,12 +636,24 @@ public final class GameHost {
         return "batch_block";
     }
 
+    /**
+     * Undo. The question the seat holds dies with the turn: rollbackTurns aborts
+     * the player's wait and the game thread asks afresh from the restarted turn.
+     * Forget that question here, or awaitDecision hands it out again and the
+     * person is asked something the engine no longer wants answered (seen as
+     * "undo takes two clicks"). Only that one is forgotten — the fresh question
+     * may already have landed by the time the rollback returns (clearPending
+     * compares) — and with it any combat batch it was mid-way through.
+     */
     public boolean rollback(String seatName, int turns) {
-        seat(seatName);
+        Seat seat = seat(seatName);
         if (!game.canRollbackTurns(turns)) {
             return false;
         }
+        Decision stale = seat.pending();
+        seat.batch.clear();
         game.rollbackTurns(turns);
+        seat.clearPending(stale);
         return true;
     }
 
