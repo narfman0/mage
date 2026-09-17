@@ -12,7 +12,7 @@
     <artifactId>mage-player-seat</artifactId>
     <packaging>jar</packaging>
     <name>Mage Player Seat</name>
-    <description>Spike: a seat answered in-process, no server, no client (fullpod docs/rearch.md)</description>
+    <description>The engine as a local service: seats answered in-process over a loopback socket (fullpod docs/rearch.md)</description>
 
     <dependencies>
         <dependency>
@@ -44,6 +44,15 @@
             <groupId>${project.groupId}</groupId>
             <artifactId>mage-game-twoplayerduel</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>mage-game-commanderfreeforall</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
         </dependency>
         <dependency>
             <groupId>junit</groupId>
