@@ -1,7 +1,14 @@
 package mage.player.seat;
 
+import mage.cards.Card;
 import mage.constants.CardType;
+import mage.constants.CommanderCardType;
+import mage.constants.Zone;
+import mage.game.Game;
+import mage.players.Player;
 import mage.util.ShortIdRegistry;
+import mage.watchers.common.CommanderInfoWatcher;
+import mage.watchers.common.CommanderPlaysCountWatcher;
 import mage.view.AbilityView;
 import mage.view.CardView;
 import mage.view.CardsView;
@@ -335,6 +342,15 @@ public final class Views {
     // ---- board ----------------------------------------------------------
 
     public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId) {
+        return players(gameView, myPlayerId, null);
+    }
+
+    /**
+     * The players array. With the game, each seat's command zone is rendered
+     * as cards (where the commander is, its cast count and tax, the damage it
+     * has dealt); without it, as names.
+     */
+    public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId, Game game) {
         List<Map<String, Object>> players = new ArrayList<>();
         for (PlayerView player : stablePlayers(gameView, myPlayerId)) {
             Map<String, Object> info = new HashMap<>();
@@ -391,16 +407,71 @@ public final class Views {
                 }
                 info.put("counters", counters);
             }
-            if (player.getCommandObjectList() != null && !player.getCommandObjectList().isEmpty()) {
-                List<String> commanders = new ArrayList<>();
-                for (CommandObjectView cmd : player.getCommandObjectList()) {
-                    commanders.add(cmd.getName());
-                }
+            List<Object> commanders = commandZone(player, game);
+            if (!commanders.isEmpty()) {
                 info.put("commanders", commanders);
             }
             players.add(info);
         }
         return players;
+    }
+
+    /**
+     * A seat's command zone. With the game: the player's commanders for the
+     * whole game (the engine only keeps a command-zone object while the card
+     * is physically there, so the view alone forgets a commander that is on
+     * the battlefield), each as a card. Without it: the names in the view.
+     */
+    private List<Object> commandZone(PlayerView player, Game game) {
+        List<Object> out = new ArrayList<>();
+        Player p = game != null ? game.getPlayer(player.getPlayerId()) : null;
+        if (p != null) {
+            for (UUID id : game.getCommandersIds(p, CommanderCardType.COMMANDER_OR_OATHBREAKER, false)) {
+                Card card = game.getCard(id);
+                if (card != null) {
+                    out.add(commanderInfo(card, game));
+                }
+            }
+            return out;
+        }
+        if (player.getCommandObjectList() != null) {
+            for (CommandObjectView cmd : player.getCommandObjectList()) {
+                if (cmd instanceof CommanderView) {
+                    out.add(cmd.getName());
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * One commander for the board's command zone: the card (same short id it
+     * keeps as a permanent, so a cast option's ref finds it wherever it is),
+     * where it is right now, and the numbers a table shows next to it — how
+     * often it has been cast from the command zone and the tax that makes,
+     * and the damage it has dealt to each player (21 is lethal).
+     */
+    private Map<String, Object> commanderInfo(Card card, Game game) {
+        Map<String, Object> info = cardInfo(new CardView(card, game));
+        info.put("id", shortId(card.getId()));
+        Zone zone = game.getState().getZone(card.getId());
+        info.put("zone", zone == null ? "command" : zone.name().toLowerCase());
+        CommanderPlaysCountWatcher plays = game.getState().getWatcher(CommanderPlaysCountWatcher.class);
+        if (plays != null) {
+            int count = plays.getPlaysCount(card.getId());
+            info.put("cast_count", count);
+            info.put("tax", 2 * count);
+        }
+        CommanderInfoWatcher damage = game.getState().getWatcher(CommanderInfoWatcher.class, card.getId());
+        if (damage != null && !damage.getDamageToPlayer().isEmpty()) {
+            Map<String, Integer> dealt = new LinkedHashMap<>();
+            for (Map.Entry<UUID, Integer> e : damage.getDamageToPlayer().entrySet()) {
+                Player p = game.getPlayer(e.getKey());
+                dealt.put(p != null ? p.getName() : e.getKey().toString(), e.getValue());
+            }
+            info.put("damage_dealt", dealt);
+        }
+        return info;
     }
 
     private Map<String, Object> permanentInfo(PermanentView perm) {
