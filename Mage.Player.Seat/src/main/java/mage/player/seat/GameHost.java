@@ -486,7 +486,7 @@ public final class GameHost {
                 LOG.error("choose_action failed for " + seatName, ex);
                 return error("internal_error", String.valueOf(ex), true);
             }
-            seat.clearPending();
+            seat.clearPending(d);
             Map<String, Object> r = new LinkedHashMap<>();
             r.put("success", true);
             r.put("action_taken", taken);
