@@ -31,7 +31,8 @@ public final class ReplayScript {
 
     /** One recorded decision. */
     public record Decision(int seq, String player, String queryType, String responseType,
-                           String id, String name, JsonElement value, String color, Integer abilityIndex) {
+                           String id, String name, JsonElement value, String color, Integer abilityIndex,
+                           Integer modeIndex) {
     }
 
     private static final Pattern LOG_REF = Pattern.compile("\\s*\\[[0-9a-f]{3}\\]");
@@ -88,7 +89,8 @@ public final class ReplayScript {
                     str(r, "name"),
                     r.get("value"),
                     str(r, "color"),
-                    r.has("ability_index") && r.get("ability_index").isJsonPrimitive() ? r.get("ability_index").getAsInt() : null));
+                    r.has("ability_index") && r.get("ability_index").isJsonPrimitive() ? r.get("ability_index").getAsInt() : null,
+                    r.has("mode_index") && r.get("mode_index").isJsonPrimitive() ? r.get("mode_index").getAsInt() : null));
             } else if ("game_action".equals(type)) {
                 logs.add(normalizeLog(str(e, "message")));
             } else if ("game_start".equals(type) && e.has("players") && e.get("players").isJsonArray()) {
@@ -108,13 +110,16 @@ public final class ReplayScript {
     }
 
     /** A game log line as the record stores it (HTML stripped, like
-     *  ServerGameEventLogCollector) and without its per-run engine refs. */
+     *  ServerGameEventLogCollector) and without its per-run engine refs.
+     *  Whitespace runs collapse to one space whether or not the line went
+     *  through Jsoup: the recorder's did, so "HAND:  (none)" and
+     *  "HAND: (none)" are the same line. */
     public static String normalizeLog(String message) {
         if (message == null) {
             return "";
         }
         String text = message.indexOf('<') >= 0 ? org.jsoup.Jsoup.parse(message).text() : message;
-        return LOG_REF.matcher(text).replaceAll("").trim();
+        return LOG_REF.matcher(text).replaceAll("").replaceAll("\\s+", " ").trim();
     }
 
     public int total() {
