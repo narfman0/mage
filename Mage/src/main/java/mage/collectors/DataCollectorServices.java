@@ -2,8 +2,11 @@ package mage.collectors;
 
 import mage.collectors.services.PrintGameLogsDataCollector;
 import mage.collectors.services.SaveGameHistoryDataCollector;
+import mage.collectors.services.ReplayFeederCollector;
+import mage.collectors.services.ServerGameEventLogCollector;
 import mage.game.Game;
 import mage.game.Table;
+import mage.game.events.PlayerQueryEvent;
 import mage.game.stack.StackObject;
 import mage.players.Player;
 import org.apache.log4j.Logger;
@@ -53,6 +56,8 @@ final public class DataCollectorServices implements DataCollector {
         // fill all possible services
         getInstance().allServices.add(new PrintGameLogsDataCollector());
         getInstance().allServices.add(new SaveGameHistoryDataCollector());
+        getInstance().allServices.add(new ServerGameEventLogCollector());
+        getInstance().allServices.add(new ReplayFeederCollector());
         logger.info(String.format("Data collectors: found %d services", getInstance().allServices.size()));
 
         // enable only needed
@@ -60,6 +65,10 @@ final public class DataCollectorServices implements DataCollector {
             boolean isDefault = false;
             isDefault |= enablePrintGameLogs && service.getServiceCode().equals(PrintGameLogsDataCollector.SERVICE_CODE);
             isDefault |= enableSaveGameHistory && service.getServiceCode().equals(SaveGameHistoryDataCollector.SERVICE_CODE);
+            // Server game event log is always enabled (no-ops when gameLogDir is null)
+            isDefault |= service.getServiceCode().equals(ServerGameEventLogCollector.SERVICE_CODE);
+            // Replay feeder is always enabled too (no-ops when replayFrom is null)
+            isDefault |= service.getServiceCode().equals(ReplayFeederCollector.SERVICE_CODE);
             boolean isEnable = isServiceEnable(service.getServiceCode(), isDefault);
             if (isEnable) {
                 getInstance().activeServices.add(service);
@@ -112,9 +121,9 @@ final public class DataCollectorServices implements DataCollector {
     }
 
     @Override
-    public void onGameLog(Game game, String message) {
+    public void onGameLog(Game game, String message, int gameSeq) {
         if (game.isSimulation()) return;
-        activeServices.forEach(c -> c.onGameLog(game, message));
+        activeServices.forEach(c -> c.onGameLog(game, message, gameSeq));
     }
 
     @Override
@@ -127,6 +136,18 @@ final public class DataCollectorServices implements DataCollector {
     public void onGameEnd(Game game) {
         if (game.isSimulation()) return;
         activeServices.forEach(c -> c.onGameEnd(game));
+    }
+
+    @Override
+    public void onPlayerQuery(Game game, PlayerQueryEvent event, int gameSeq) {
+        if (game.isSimulation()) return;
+        activeServices.forEach(c -> c.onPlayerQuery(game, event, gameSeq));
+    }
+
+    @Override
+    public void onPlayerResponse(Game game, UUID playerId, String responseType, Object data) {
+        if (game.isSimulation()) return;
+        activeServices.forEach(c -> c.onPlayerResponse(game, playerId, responseType, data));
     }
 
     @Override

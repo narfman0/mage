@@ -172,6 +172,30 @@ public abstract class GameImpl implements Game {
     // temporary store for income concede commands, don't copy
     private final LinkedList<UUID> concedingPlayers = new LinkedList<>();
 
+    // Server-side game event log: monotonic sequence counter and shared short ID registry.
+    // Copies keep the current seq value but must not share the mutable counter; short IDs are game-lifetime singletons.
+    private transient AtomicInteger gameSeq;
+    private transient ShortIdRegistry shortIdRegistry;
+
+    // Bridge event log: structured action events for MCP clients.
+    // Transient and NOT copied — simulation copies get null (recordBridgeEvent checks for this).
+    private transient List<BridgeLogEntry> bridgeEventBuffer;
+
+    private static final Set<GameEvent.EventType> BRIDGE_EVENT_TYPES = Set.of(
+            GameEvent.EventType.SPELL_CAST,
+            GameEvent.EventType.LAND_PLAYED,
+            GameEvent.EventType.ACTIVATED_ABILITY,
+            GameEvent.EventType.ATTACKER_DECLARED,
+            GameEvent.EventType.BLOCKER_DECLARED,
+            GameEvent.EventType.DESTROYED_PERMANENT,
+            GameEvent.EventType.SACRIFICED_PERMANENT,
+            GameEvent.EventType.COUNTERED,
+            GameEvent.EventType.GAINED_LIFE,
+            GameEvent.EventType.LOST_LIFE,
+            GameEvent.EventType.DREW_CARD,
+            GameEvent.EventType.BEGIN_TURN
+    );
+
     public GameImpl(MultiplayerAttackOption attackOption, RangeOfInfluence range, Mulligan mulligan, int minimumDeckSize, int startingLife, int startingHandSize) {
         this.id = UUID.randomUUID();
         this.gameIndex = GLOBAL_INDEX.incrementAndGet();
@@ -183,6 +207,9 @@ public abstract class GameImpl implements Game {
         this.startingHandSize = startingHandSize;
         this.executingRollback = false;
         this.minimumDeckSize = minimumDeckSize;
+        this.gameSeq = new AtomicInteger(0);
+        this.shortIdRegistry = new ShortIdRegistry();
+        this.bridgeEventBuffer = Collections.synchronizedList(new ArrayList<>());
 
         initGameDefaultWatchers();
     }
@@ -198,6 +225,9 @@ public abstract class GameImpl implements Game {
         this.gameIndex = game.gameIndex;
         this.tableId = game.tableId;
         this.totalErrorsCount.set(game.totalErrorsCount.get());
+        this.gameSeq = new AtomicInteger(game.gameSeq.get());
+        this.shortIdRegistry = game.shortIdRegistry;
+        this.bridgeEventBuffer = null; // simulation copies don't record bridge events
 
         this.ready = game.ready;
         //this.tableEventSource = game.tableEventSource; // client-server part, not need on copy/simulations
@@ -879,9 +909,11 @@ public abstract class GameImpl implements Game {
             // stop current player dialog and execute concede
             currentPriorityPlayer.signalPlayerConcede(true);
         } else {
-            // concede for another player
-            // allow current player to continue and check concede on any next priority
-            currentPriorityPlayer.signalPlayerConcede(false);
+            // Another player conceded while this player owns the response
+            // window. Wake the chooser so waitForResponse() can run
+            // checkConcede() immediately instead of leaving the concede queued
+            // behind a stalled dialog.
+            currentPriorityPlayer.signalPlayerConcede(true);
         }
 
         // game thread can call concede directly
@@ -1306,8 +1338,55 @@ public abstract class GameImpl implements Game {
         });
 
         //20091005 - 103.1
+        if (gameOptions.skipInitShuffling) {
+            // Seed the game RNG for deterministic shuffling, coin flips, etc.
+            RandomUtil.setSeed(42);
+        }
+        // GRPO wants common random numbers: G games sharing one shuffle, so the
+        // group baseline measures how the policy PLAYED rather than what it DREW.
+        // Seeded here, immediately before the shuffle, rather than at JVM start --
+        // anything else consuming RandomUtil between startup and this point (table
+        // setup, id generation, the engine AI) would shift the stream by a variable
+        // number of draws and the same seed would yield different hands.
+        //
+        // The seed arrives on THIS GAME's options. It used to be read from
+        // -Dxmage.game.seed, which is fixed for the life of the JVM, so a server
+        // hosting more than one game dealt every one of them the same hand --
+        // and that, not the harness, is why every game ran its own server and
+        // paid 25.1s to load 87,765 card implementations. 72% of a 35s synth
+        // game was this one property being per-process instead of per-game.
+        //
+        // RandomUtil.random is still a process-global static, so games running
+        // CONCURRENTLY in one JVM would still interleave their draws. That
+        // constraint is unchanged and still real. SEQUENTIAL games are sound,
+        // and measured rather than argued: re-seeding after 50,000 intervening
+        // draws reproduces the shuffle exactly, and a different seed still
+        // differs, so game N+1's deal is not contaminated by what game N drew.
+        //
+        // The property is still honoured, as the fallback for a JVM that hosts
+        // exactly one game.
+        Long gameSeed = resolveGameSeed();
+        if (gameSeed != null) {
+            RandomUtil.setSeed(gameSeed);
+            logger.info("Game RNG seeded with " + gameSeed
+                    + (getOptions().gameSeed != null ? " (per-game)" : " (xmage.game.seed)"));
+        }
         if (!gameOptions.skipInitShuffling) { //don't shuffle in test mode for card injection on top of player's libraries
-            for (Player player : state.getPlayers().values()) {
+            java.util.Collection<Player> toShuffle = state.getPlayers().values();
+            if (gameSeed != null) {
+                // Both players draw from ONE seeded stream, so whoever shuffles first
+                // gets the first deal. state.getPlayers() is keyed by a per-game random
+                // UUID, so its iteration order varies between runs -- which made five
+                // games at one seed produce exactly TWO deals, the pilot's and the
+                // opponent's, swapped. The deck order was perfectly deterministic; who
+                // received it was not. Fix the order by name so the same seed gives the
+                // same player the same deck. Only when seeded, so unseeded play is
+                // untouched.
+                java.util.List<Player> ordered = new java.util.ArrayList<>(toShuffle);
+                ordered.sort(java.util.Comparator.comparing(Player::getName));
+                toShuffle = ordered;
+            }
+            for (Player player : toShuffle) {
                 player.shuffleLibrary(null, this);
             }
         }
@@ -1558,8 +1637,50 @@ public abstract class GameImpl implements Game {
         state.cleanupPermanentCostsTags(this);
     }
 
+    /**
+     * The seed for THIS game, or null if it is not seeded.
+     * <p>
+     * Per-game option first, JVM property second. Both callers must ask the same
+     * question the same way: init() seeds the shuffle and pickChoosingPlayer()
+     * sorts the seats so the toss is seeded too, and a game where one of those
+     * fired and the other did not is the failure this method exists to prevent
+     * -- it produces identical opening hands with a coin toss that still swings
+     * ~50/50, which reads as noise in the policy rather than as a bug in the
+     * harness. That is exactly how the toss defect hid for 80 games.
+     */
+    private Long resolveGameSeed() {
+        Long perGame = getOptions().gameSeed;
+        if (perGame != null) {
+            return perGame;
+        }
+        String seedProperty = System.getProperty("xmage.game.seed");
+        if (seedProperty == null || seedProperty.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(seedProperty.trim());
+        } catch (NumberFormatException e) {
+            // Loud: a typo'd seed that silently ran unseeded would produce a
+            // group with independent shuffles that LOOKS like a seeded one.
+            throw new IllegalArgumentException("xmage.game.seed is not a long: " + seedProperty, e);
+        }
+    }
+
     protected UUID pickChoosingPlayer() {
         UUID[] players = getPlayers().keySet().toArray(new UUID[0]);
+        // Same defect as the init() shuffle, and the same fix. The draw below is
+        // deterministic under xmage.game.seed -- it happens after seeding and after a
+        // now-deterministic shuffle, so nextInt returns the same INDEX every time. What
+        // varies is the array it indexes: Players is a LinkedHashMap in TABLE JOIN order,
+        // and joins race, so index 0 is a different seat run to run. Measured by mtg-d1
+        // over 80 games on 4 fixed seeds: the toss came out ~50/50 within every seed
+        // while the opening hands were identical, which is exactly this and nothing else.
+        // Worth 2.94 life points on average (SE 1.77), and all 3 wins in that run were
+        // on the play. Sorting by name makes the seed fix the toss too, so fixed deals
+        // become genuinely paired.
+        if (resolveGameSeed() != null) {
+            java.util.Arrays.sort(players, java.util.Comparator.comparing(id -> getPlayer(id).getName()));
+        }
         UUID playerId;
         while (!hasEnded()) {
             playerId = players[RandomUtil.nextInt(players.length)]; // test game
@@ -1814,9 +1935,20 @@ public abstract class GameImpl implements Game {
                         GameState restoredState = restoreState(rollbackBookmarkOnPriorityStart, "Game error: " + e);
                         rollbackBookmarkOnPriorityStart = 0;
                         if (restoredState != null) {
+                            // Remove the stack item that caused the error — it's back on the
+                            // stack after restore and would fail identically on retry.
+                            if (!state.getStack().isEmpty()) {
+                                StackObject offending = state.getStack().peek();
+                                state.getStack().remove(offending, this);
+                                String msg = "Dropped " + offending.getLogName()
+                                        + " from stack to recover from game error";
+                                logger.error(msg);
+                                this.fireErrorEvent(msg, e);
+                                this.informPlayers(msg);
+                            }
                             this.informPlayers(String.format("Auto-restored to %s due game error: %s", restoredState, e));
                         } else {
-                            logger.error("Can't auto-restore to prev state");
+                            throw new MageException("Can't auto-restore to prev state after error: " + e);
                         }
 
                         // count total errors
@@ -3219,7 +3351,8 @@ public abstract class GameImpl implements Game {
 
     @Override
     public void informPlayers(String message) {
-        DataCollectorServices.getInstance().onGameLog(this, message);
+        int seq = nextGameSeq();
+        DataCollectorServices.getInstance().onGameLog(this, message, seq);
 
         if (simulation) {
             return;
@@ -3534,6 +3667,9 @@ public abstract class GameImpl implements Game {
 
     @Override
     public void fireEvent(GameEvent event) {
+        if (!simulation) {
+            recordBridgeEvent(event);
+        }
         state.handleEvent(event, this);
     }
 
@@ -4297,5 +4433,158 @@ public abstract class GameImpl implements Game {
     @Override
     public void setTableId(UUID tableId) {
         this.tableId = tableId;
+    }
+
+    @Override
+    public int nextGameSeq() {
+        return gameSeq.incrementAndGet();
+    }
+
+    @Override
+    public int getGameSeq() {
+        return gameSeq.get();
+    }
+
+    @Override
+    public ShortIdRegistry getShortIdRegistry() {
+        return shortIdRegistry;
+    }
+
+    // -- Bridge event log --
+
+    private void recordBridgeEvent(GameEvent event) {
+        if (bridgeEventBuffer == null) {
+            return; // null on simulation copies
+        }
+        if (!BRIDGE_EVENT_TYPES.contains(event.getType())) {
+            return;
+        }
+
+        String playerName = null;
+        Player eventPlayer = event.getPlayerId() != null ? getPlayer(event.getPlayerId()) : null;
+        if (eventPlayer != null) {
+            playerName = eventPlayer.getName();
+        }
+
+        String cardName = null;
+        String targetName = null;
+        boolean visibleToAll = true;
+
+        switch (event.getType()) {
+            case SPELL_CAST -> {
+                // targetId = spell id, sourceId = spell source
+                MageObject spell = getObject(event.getTargetId());
+                cardName = spell != null ? spell.getName() : null;
+            }
+            case LAND_PLAYED -> {
+                MageObject land = getObject(event.getTargetId());
+                cardName = land != null ? land.getName() : null;
+            }
+            case ACTIVATED_ABILITY -> {
+                MageObject source = getObject(event.getSourceId());
+                cardName = source != null ? source.getName() : null;
+            }
+            case ATTACKER_DECLARED -> {
+                // sourceId = attacking creature, targetId = defending player/planeswalker
+                MageObject attacker = getObject(event.getSourceId());
+                cardName = attacker != null ? attacker.getName() : null;
+                Player defender = getPlayer(event.getTargetId());
+                if (defender != null) {
+                    targetName = defender.getName();
+                } else {
+                    MageObject defenderObj = getObject(event.getTargetId());
+                    targetName = defenderObj != null ? defenderObj.getName() : null;
+                }
+            }
+            case BLOCKER_DECLARED -> {
+                // sourceId = blocker, targetId = attacker
+                MageObject blocker = getObject(event.getSourceId());
+                cardName = blocker != null ? blocker.getName() : null;
+                MageObject attackerObj = getObject(event.getTargetId());
+                targetName = attackerObj != null ? attackerObj.getName() : null;
+            }
+            case DESTROYED_PERMANENT, SACRIFICED_PERMANENT -> {
+                // targetId = the permanent
+                MageObject permanent = getObject(event.getTargetId());
+                if (permanent == null) {
+                    Card card = getCard(event.getTargetId());
+                    permanent = card;
+                }
+                cardName = permanent != null ? permanent.getName() : null;
+            }
+            case COUNTERED -> {
+                // targetId = countered spell/ability
+                MageObject countered = getObject(event.getTargetId());
+                cardName = countered != null ? countered.getName() : null;
+            }
+            case GAINED_LIFE, LOST_LIFE -> {
+                // playerId = player, amount = life amount
+                // targetName not used; amount carries the value
+            }
+            case DREW_CARD -> {
+                // targetId = the card drawn — private to drawing player
+                Card drawn = getCard(event.getTargetId());
+                cardName = drawn != null ? drawn.getName() : null;
+                visibleToAll = false; // only the drawing player should see the card name
+            }
+            case BEGIN_TURN -> {
+                // playerId = active player for the new turn
+            }
+            default -> {
+                return; // shouldn't happen given BRIDGE_EVENT_TYPES filter
+            }
+        }
+
+        TurnPhase phaseType = getTurnPhaseType();
+        PhaseStep stepType = getTurnStepType();
+        Player activePlayerObj = getPlayer(getActivePlayerId());
+
+        int index;
+        synchronized (bridgeEventBuffer) {
+            index = bridgeEventBuffer.size();
+        }
+
+        BridgeLogEntry entry = new BridgeLogEntry(
+                index,
+                getGameSeq(),
+                event.getType().name(),
+                getTurnNum(),
+                phaseType != null ? phaseType.name() : null,
+                stepType != null ? stepType.name() : null,
+                activePlayerObj != null ? activePlayerObj.getName() : null,
+                playerName,
+                cardName,
+                targetName,
+                event.getAmount(),
+                visibleToAll
+        );
+        bridgeEventBuffer.add(entry);
+    }
+
+    @Override
+    public List<BridgeLogEntry> getBridgeEventsSince(int cursor, UUID playerId) {
+        if (bridgeEventBuffer == null) {
+            return Collections.emptyList();
+        }
+        List<BridgeLogEntry> result = new ArrayList<>();
+        synchronized (bridgeEventBuffer) {
+            for (int i = cursor; i < bridgeEventBuffer.size(); i++) {
+                BridgeLogEntry entry = bridgeEventBuffer.get(i);
+                if (entry.visibleToAll()) {
+                    result.add(entry);
+                } else if (playerId != null) {
+                    // Check if the requesting player is the one who performed the action
+                    Player requestingPlayer = getPlayer(playerId);
+                    if (requestingPlayer != null && requestingPlayer.getName().equals(entry.player())) {
+                        result.add(entry);
+                    } else {
+                        result.add(entry.redacted());
+                    }
+                } else {
+                    result.add(entry.redacted());
+                }
+            }
+        }
+        return result;
     }
 }

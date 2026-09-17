@@ -2,6 +2,7 @@ package mage.collectors;
 
 import mage.game.Game;
 import mage.game.Table;
+import mage.game.events.PlayerQueryEvent;
 import mage.game.stack.StackObject;
 import mage.players.Player;
 
@@ -53,11 +54,23 @@ public interface DataCollector {
 
     void onGameStart(Game game);
 
-    void onGameLog(Game game, String message);
+    void onGameLog(Game game, String message, int gameSeq);
 
     void onGameError(Game game, Exception e);
 
     void onGameEnd(Game game);
+
+    /**
+     * Called when a player query (decision point) is dispatched to a player.
+     */
+    void onPlayerQuery(Game game, PlayerQueryEvent event, int gameSeq);
+
+    /**
+     * Called when a player's response to a query arrives.
+     * @param responseType one of "uuid", "boolean", "string", "integer", "manaType"
+     * @param data the raw response data (UUID, Boolean, String, Integer, or ManaType+playerId)
+     */
+    void onPlayerResponse(Game game, UUID playerId, String responseType, Object data);
 
     /**
      * @param userName can be null for system messages
