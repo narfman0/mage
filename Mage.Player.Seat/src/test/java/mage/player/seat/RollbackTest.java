@@ -42,17 +42,13 @@ public class RollbackTest {
             }
             Assert.assertEquals(3, turnOf(d));
             Assert.assertTrue("rollback accepted", host.rollback("You", 1));
-            // The engine restarts the earlier turn and asks again from there.
-            Map<String, Object> after = null;
-            for (int i = 0; i < 20; i++) {
-                after = host.awaitDecision("You", 120_000);
-                Assert.assertTrue(String.valueOf(after), Boolean.TRUE.equals(after.get("action_pending")));
-                if (turnOf(after) < 3) {
-                    break;
-                }
-                Assert.assertEquals(true, host.chooseAction("You", script.answer(after)).get("success"));
-            }
+            // The engine restarts the earlier turn and asks again from there — and
+            // the very next question is from there: the one held at the rollback is
+            // gone, not handed out once more (that was "undo takes two clicks").
+            Map<String, Object> after = host.awaitDecision("You", 120_000);
+            Assert.assertTrue(String.valueOf(after), Boolean.TRUE.equals(after.get("action_pending")));
             Assert.assertTrue("back before turn 3: " + after.get("context"), turnOf(after) < 3);
+            Assert.assertNotEquals("a fresh question, not the undone one", d.get("game_seq"), after.get("game_seq"));
         } finally {
             host.end();
         }
