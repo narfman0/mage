@@ -20,7 +20,13 @@ public class AutoPayTest {
         for (List<Kind> units : outputs) {
             outs.add(new Output(UUID.randomUUID(), units));
         }
-        return new Source(UUID.nameUUIDFromBytes((name + outs.hashCode()).getBytes()), AutoPay.key(outs, null), outs);
+        return new Source(UUID.nameUUIDFromBytes((name + outs.hashCode()).getBytes()), AutoPay.key(outs, null, true), outs, true);
+    }
+
+    /** A pilot's-only source: tap-only but not clean (a mana creature, Ancient Tomb). */
+    private static Source unclean(String name, List<Kind> units) {
+        List<Output> outs = List.of(new Output(UUID.randomUUID(), units));
+        return new Source(UUID.nameUUIDFromBytes(name.getBytes()), AutoPay.key(outs, null, false), outs, false);
     }
 
     private static Source basic(Kind k) {
@@ -164,6 +170,22 @@ public class AutoPayTest {
         // Forest leaves {U, any}; Island leaves {G, any}; the rock leaves {G, U}: any covers all.
         Assert.assertFalse("the rock is never the one to tap: " + p, p.pick().source().key().equals(anyColour().key()));
         Assert.assertTrue(p.ambiguous());
+    }
+
+    @Test
+    public void pilotPrefersCleanSources() {
+        // A dork and a Forest both make {G}; a pilot taps the Forest. Ancient Tomb pays {2} alone: the pilot taps two Forests.
+        // (The two plans are the same for mana, so this is not ambiguous; the Forest is the representative.)
+        Plan dork = plan("G", unclean("elves", List.of(Kind.G)), forest());
+        Assert.assertFalse(dork.ambiguous());
+        Assert.assertEquals(forest().key(), dork.pick().source().key());
+        Plan tomb = plan("2", unclean("tomb", List.of(Kind.C, Kind.C)), forest(), forest());
+        Assert.assertTrue(tomb.ambiguous());
+        Assert.assertEquals(forest().key(), tomb.pick().source().key());
+        // Only the dork makes green: a pilot uses it (a person's seat never sees it as a source).
+        Plan only = plan("G", unclean("elves", List.of(Kind.G)), island());
+        Assert.assertFalse(only.ambiguous());
+        Assert.assertFalse(only.pick().source().clean());
     }
 
     @Test
