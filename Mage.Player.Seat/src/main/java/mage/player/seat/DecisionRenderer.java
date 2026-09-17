@@ -295,25 +295,12 @@ public final class DecisionRenderer {
                 if (!already.isEmpty()) {
                     r.put("incoming_attackers", already);
                 }
-                Map<UUID, List<UUID>> blockable = (Map<UUID, List<UUID>>) options.get("blockableAttackers");
                 for (UUID id : blockers) {
                     PermanentView perm = views.findPermanentView(id, view);
                     if (perm == null) {
                         continue;
                     }
                     Map<String, Object> c = creatureChoice(choices.size(), id, perm, "blocker");
-                    if (blockable != null) {
-                        // Which attackers THIS blocker may legally block, from the same
-                        // canBlock() the engine validates with. Emitted even when empty.
-                        List<String> legal = new ArrayList<>();
-                        List<UUID> targets = blockable.get(id);
-                        if (targets != null) {
-                            for (UUID attackerId : targets) {
-                                legal.add(views.shortId(attackerId));
-                            }
-                        }
-                        c.put("can_block", legal);
-                    }
                     choices.add(c);
                     backing.add(id);
                 }
