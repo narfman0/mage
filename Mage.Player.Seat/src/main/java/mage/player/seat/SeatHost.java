@@ -60,15 +60,23 @@ public final class SeatHost {
 
     public static void main(String[] args) throws Exception {
         int port = 0;
-        for (int i = 0; i < args.length - 1; i++) {
-            if ("--port".equals(args[i])) {
+        boolean scanOnly = false;
+        for (int i = 0; i < args.length; i++) {
+            if ("--port".equals(args[i]) && i + 1 < args.length) {
                 port = Integer.parseInt(args[i + 1]);
+            }
+            if ("--scan-only".equals(args[i])) {
+                scanOnly = true; // build the card DB in ./db and exit (image builds, a warm first boot)
             }
         }
         long t0 = System.currentTimeMillis();
         List<String> errors = new ArrayList<>();
         CardScanner.scan(errors);
         LOG.info("cards scanned in " + (System.currentTimeMillis() - t0) + " ms" + (errors.isEmpty() ? "" : "; " + errors.size() + " errors"));
+        if (scanOnly) {
+            System.out.println("SEATHOST_SCANNED=" + (System.currentTimeMillis() - t0));
+            System.exit(errors.isEmpty() ? 0 : 1);
+        }
         GameHost.initCollectors();
         SeatHost host = new SeatHost(port);
         // The line the launcher waits for.
