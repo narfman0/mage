@@ -12,8 +12,8 @@
 
     <properties>
         <!-- app: game must be able to run under java 8 -->
-        <java.version>8</java.version>
-        <java.release>8</java.release>
+        <java.version>21</java.version>
+        <java.release>21</java.release>
         <root.dir>${project.basedir}</root.dir>
 
         <!-- TODO: research and optimize version in modules (version change for modules and server configs must be changeable by one line instead perl script -->
@@ -292,7 +292,7 @@
             <!-- WARNING, do not update db engine (stable: 1.4.197) cause compatibility issues, see https://github.com/h2database/h2database/issues/2078 -->
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <version>1.4.197</version>
+            <version>2.4.240</version>
             <scope>runtime</scope>
         </dependency>
 
