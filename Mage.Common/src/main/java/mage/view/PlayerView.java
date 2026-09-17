@@ -61,7 +61,6 @@ public class PlayerView implements Serializable {
     private final List<String> designationNames = new ArrayList<>();
     private final int landsPlayed;
     private final int landsPerTurn;
-    private String shortId; // assigned by server's ShortIdRegistry in GameView.assignShortIds()
 
     public PlayerView(Player player, GameState state, Game game, UUID createdForPlayerId, UUID watcherUserId) {
         this.playerId = player.getId();
@@ -334,14 +333,6 @@ public class PlayerView implements Serializable {
 
     public int getLandsPerTurn() {
         return landsPerTurn;
-    }
-
-    public String getShortId() {
-        return shortId;
-    }
-
-    public void setShortId(String shortId) {
-        this.shortId = shortId;
     }
 
 }
