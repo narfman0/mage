@@ -169,6 +169,9 @@ public final class GameHost {
             } catch (Throwable t) {
                 gameError = t;
                 LOG.error("game thread died: " + config.gameId(), t);
+            } finally {
+                // A seeded game bound its own generator to this thread (GameImpl.init).
+                mage.util.RandomUtil.unbindThread();
             }
         }, "GAME " + config.gameId());
         gameThread.setDaemon(true);
