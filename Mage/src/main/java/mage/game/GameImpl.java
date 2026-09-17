@@ -1357,6 +1357,9 @@ public abstract class GameImpl implements Game {
         }
 
         //20091005 - 103.2
+        if (startingPlayerId == null && gameOptions.startingPlayer != GameOptions.StartingPlayer.CHOOSE) {
+            startingPlayerId = rollForStartingPlayer(gameOptions.startingPlayer == GameOptions.StartingPlayer.ROLL);
+        }
         Player choosingPlayer = null;
         if (startingPlayerId == null) {
             TargetPlayer targetPlayer = new TargetPlayer();
@@ -1605,6 +1608,62 @@ public abstract class GameImpl implements Game {
     /** The seed for THIS game (GameOptions.gameSeed), or null if it is not seeded. */
     private Long resolveGameSeed() {
         return getOptions().gameSeed;
+    }
+
+    /**
+     * The starting player without a prompt (GameOptions.StartingPlayer): a d20
+     * roll-off among the players who can respond — highest goes first, ties
+     * re-roll among the tied, each round a log line — or, not rolling, one of
+     * them at random. Seeded games sort the seats by name first, as the toss
+     * does, so the same seed rolls the same dice for the same players.
+     */
+    protected UUID rollForStartingPlayer(boolean roll) {
+        java.util.List<Player> inRace = new java.util.ArrayList<>();
+        for (Player player : getPlayers().values()) {
+            if (player.canRespond()) {
+                inRace.add(player);
+            }
+        }
+        if (resolveGameSeed() != null) {
+            inRace.sort(java.util.Comparator.comparing(Player::getName));
+        }
+        if (inRace.isEmpty()) {
+            return null;
+        }
+        if (!roll || inRace.size() == 1) {
+            Player picked = inRace.get(RandomUtil.nextInt(inRace.size()));
+            informPlayers(picked.getLogName() + " goes first" + (roll ? "" : " (random)"));
+            return picked.getId();
+        }
+        while (inRace.size() > 1 && !hasEnded()) {
+            java.util.List<String> said = new java.util.ArrayList<>();
+            java.util.List<Player> best = new java.util.ArrayList<>();
+            int high = 0;
+            for (Player player : inRace) {
+                int d20 = RandomUtil.nextInt(20) + 1;
+                said.add(player.getLogName() + " rolls " + d20);
+                if (d20 > high) {
+                    high = d20;
+                    best.clear();
+                }
+                if (d20 == high) {
+                    best.add(player);
+                }
+            }
+            String line = String.join(", ", said);
+            if (best.size() > 1) {
+                java.util.List<String> names = new java.util.ArrayList<>();
+                for (Player player : best) {
+                    names.add(player.getLogName());
+                }
+                line += " — " + String.join(" and ", names) + " re-roll";
+            }
+            informPlayers(line);
+            inRace = best;
+        }
+        Player winner = inRace.get(0);
+        informPlayers(winner.getLogName() + " goes first");
+        return winner.getId();
     }
 
     protected UUID pickChoosingPlayer() {
