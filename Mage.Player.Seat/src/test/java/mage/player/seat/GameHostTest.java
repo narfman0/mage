@@ -125,6 +125,55 @@ public class GameHostTest {
         }
     }
 
+    /**
+     * A transforming double-faced card is two objects to the engine, and its
+     * front face is keyed as playable beside the main card. The views know only
+     * the main card, so a seat once saw "Unknown (3cc3a2fd) (activate)" next to
+     * the real cast (a report, 2026-09-17). Now: one choice, by name, never an
+     * Unknown.
+     */
+    @Test(timeout = 240_000)
+    public void doubleFacedCardIsOnePlayableChoice() throws Exception {
+        String deck = "src/test/resources/decks/dfc_forests.dck";
+        GameHost host = new GameHost(new GameHost.Config("dfc", "duel", 4L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", deck, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)), true));
+        ScriptedSeat script = new ScriptedSeat();
+        host.start();
+        boolean sawRites = false;
+        try {
+            for (int i = 0; i < 300; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 60_000);
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                List<Map<String, Object>> choices = ScriptedSeat.choices(d);
+                for (Map<String, Object> c : choices) {
+                    Assert.assertFalse("an Unknown choice: " + c + " in " + d.get("context"), String.valueOf(c.get("name")).startsWith("Unknown"));
+                }
+                long rites = "GAME_SELECT".equals(d.get("action_type"))
+                        ? choices.stream().filter(c -> "Growing Rites of Itlimoc".equals(c.get("name")) && "cast".equals(c.get("action"))).count()
+                        : 0;
+                if (rites > 0) {
+                    // Each copy in hand once — never once per face.
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> hand = (List<Map<String, Object>>) board(d).get("hand");
+                    long inHand = hand.stream().filter(c -> "Growing Rites of Itlimoc".equals(c.get("name"))).count();
+                    Assert.assertEquals("one choice per copy in hand: " + choices, inHand, rites);
+                    sawRites = true;
+                }
+                String context = String.valueOf(d.get("context"));
+                if (Integer.parseInt(context.substring(1, context.indexOf(' '))) >= 9) {
+                    break;
+                }
+                Map<String, Object> answer = host.chooseAction("You", script.answer(d));
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+        } finally {
+            host.end();
+        }
+        Assert.assertTrue("Growing Rites was castable at some point (" + script.seen.size() + " decisions)", sawRites);
+    }
+
     @SuppressWarnings("unchecked")
     static Map<String, Object> board(Map<String, Object> d) {
         return ((List<Map<String, Object>>) d.get("board")).get(0);
