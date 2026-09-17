@@ -56,11 +56,22 @@ public final class GameHost {
      * {@code replayFrom} names a recorded engine log whose decisions the
      * replay feeder answers first (resume, fullpod docs/save-resume.md); seats
      * see no question with a seq at or below {@code holdThroughSeq}.
+     * {@code freeMulligans} is the London rule's free count (0 as written, 1
+     * the common multiplayer table rule). {@code startingPlayer} is who goes
+     * first: "host" (the first seat chooses, the default), "toss" (the engine's
+     * coin toss picks who chooses), "roll" (a d20 roll-off, highest first) or
+     * "random" (no prompt).
      */
     public record Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats,
-                         boolean offerManaSources, String replayFrom, int holdThroughSeq) {
+                         boolean offerManaSources, String replayFrom, int holdThroughSeq,
+                         int freeMulligans, String startingPlayer) {
         public Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats, boolean offerManaSources) {
             this(gameId, format, seed, gameLogDir, seats, offerManaSources, null, 0);
+        }
+
+        public Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats,
+                      boolean offerManaSources, String replayFrom, int holdThroughSeq) {
+            this(gameId, format, seed, gameLogDir, seats, offerManaSources, replayFrom, holdThroughSeq, 0, "host");
         }
     }
 
@@ -92,19 +103,26 @@ public final class GameHost {
         initCollectors();
         boolean commander = "commander".equals(config.format());
         Match match;
+        // London mulligan (XMage's GAME_DEFAULT) with the table's free count.
+        int free = Math.max(0, config.freeMulligans());
         if (commander) {
             game = new CommanderFreeForAll(MultiplayerAttackOption.MULTIPLE, RangeOfInfluence.ALL,
-                    MulliganType.GAME_DEFAULT.getMulligan(0), 40, 7);
+                    MulliganType.GAME_DEFAULT.getMulligan(free), 40, 7);
             match = new CommanderFreeForAllMatch(new MatchOptions(config.gameId(), "Commander Free For All", true));
         } else {
             game = new TwoPlayerDuel(MultiplayerAttackOption.LEFT, RangeOfInfluence.ONE,
-                    MulliganType.GAME_DEFAULT.getMulligan(0), 60, 20, 7);
+                    MulliganType.GAME_DEFAULT.getMulligan(free), 60, 20, 7);
             match = new TwoPlayerMatch(new MatchOptions(config.gameId(), "Two Player Duel", false));
         }
         GameOptions options = new GameOptions();
         options.gameLogDir = config.gameLogDir();
         options.gameSeed = config.seed();
         options.replayFrom = config.replayFrom();
+        options.startingPlayer = switch (String.valueOf(config.startingPlayer())) {
+            case "roll" -> GameOptions.StartingPlayer.ROLL;
+            case "random" -> GameOptions.StartingPlayer.RANDOM;
+            default -> GameOptions.StartingPlayer.CHOOSE;
+        };
         game.setGameOptions(options);
         views = new Views(game.getShortIdRegistry());
         renderer = new DecisionRenderer(views);
@@ -158,12 +176,17 @@ public final class GameHost {
         return new ArrayList<>(seatsByName.keySet());
     }
 
-    /** Starts the game on its own thread; the first seat chooses who plays first. */
+    /**
+     * Starts the game on its own thread. Who plays first is the config's
+     * startingPlayer: "host" hands the choice to the first seat; "toss" lets
+     * the engine's coin toss pick who chooses; "roll" and "random" decide it
+     * in GameImpl.init without a prompt (GameOptions.StartingPlayer).
+     */
     public synchronized void start() {
         if (gameThread != null) {
             return;
         }
-        UUID chooser = players.get(0).getId();
+        UUID chooser = "host".equals(String.valueOf(config.startingPlayer())) ? players.get(0).getId() : null;
         gameThread = new Thread(() -> {
             try {
                 game.start(chooser);

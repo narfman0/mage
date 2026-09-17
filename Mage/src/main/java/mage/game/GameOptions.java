@@ -90,6 +90,19 @@ public class GameOptions implements Serializable, Copyable<GameOptions> {
      */
     public String replayFrom = null;
 
+    /**
+     * How the starting player is decided when none is set before the game
+     * starts (103.2). CHOOSE is the rules text and XMage's way: the choosing
+     * player (the toss winner, or whoever start() names) picks. ROLL is what
+     * a paper Commander table does: every player rolls a d20, highest goes
+     * first, ties re-roll among the tied, every roll a log line. RANDOM picks
+     * a player with no prompt. Both draw from the game's own generator, so a
+     * seeded game rolls the same dice on replay.
+     */
+    public enum StartingPlayer { CHOOSE, ROLL, RANDOM }
+
+    public StartingPlayer startingPlayer = StartingPlayer.CHOOSE;
+
     // PLANECHASE game mode
     public boolean planeChase = false;
     // xmage uses increased by 1/3 chances (2/2/9) for chaos/planar result, see 1a9f12f5767ce0beeed26a8ff5c8a8f9490c9c47
@@ -115,6 +128,7 @@ public class GameOptions implements Serializable, Copyable<GameOptions> {
         this.gameLogDir = options.gameLogDir;
         this.gameSeed = options.gameSeed;
         this.replayFrom = options.replayFrom;
+        this.startingPlayer = options.startingPlayer;
     }
 
     @Override
