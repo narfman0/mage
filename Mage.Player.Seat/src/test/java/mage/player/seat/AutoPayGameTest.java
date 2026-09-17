@@ -39,7 +39,7 @@ public class AutoPayGameTest {
     }
 
     /** What one cast produced: the mana prompt count, and the board after. */
-    private record Outcome(int manaPrompts, boolean cast, Set<String> tapped, Set<String> untapped, int life, List<String> log) {
+    private record Outcome(int manaPrompts, boolean cast, Set<String> tapped, Set<String> untapped, int life, List<String> log, List<String> prompts) {
     }
 
     /**
@@ -50,6 +50,16 @@ public class AutoPayGameTest {
      * the product's pilot does, and what a person's Cancel does).
      */
     private Outcome play(String spell, String... battlefield) throws Exception {
+        return play(spell, List.of(), battlefield);
+    }
+
+    /**
+     * {@code picks}: the sources to answer each mana prompt with, in order,
+     * by name (a browser's multi-select sends its picks one prompt at a
+     * time); past the list a prompt is cancelled. Each prompt's message and
+     * offered sources go to {@code prompts}.
+     */
+    private Outcome play(String spell, List<String> picks, String... battlefield) throws Exception {
         GameHost host = new GameHost(new GameHost.Config("autopay", "duel", 5L, null,
                 List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), true));
         Game game = host.game();
@@ -75,6 +85,7 @@ public class AutoPayGameTest {
         Set<String> untapped = new HashSet<>();
         int life = -1;
         List<String> log = new ArrayList<>();
+        List<String> prompts = new ArrayList<>();
         host.start();
         try {
             for (int i = 0; i < 60; i++) {
@@ -90,8 +101,22 @@ public class AutoPayGameTest {
                     // The decision after the cast: the mana prompt (the choice is the
                     // player's), or the next priority with the payment made.
                     if ("GAME_PLAY_MANA".equals(type) || "GAME_PLAY_XMANA".equals(type)) {
+                        List<String> offered = new ArrayList<>();
+                        for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                            offered.add(c.get("name") + "#" + c.get("id"));
+                        }
+                        prompts.add(message + " | " + String.join(", ", offered));
+                        String pick = manaPrompts < picks.size() ? picks.get(manaPrompts) : null;
                         manaPrompts++;
-                        host.chooseAction("You", Map.of("choice", "no"));
+                        String idx = null;
+                        for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                            if (pick != null && pick.equals(c.get("name"))) {
+                                idx = String.valueOf(c.get("index"));
+                                break;
+                            }
+                        }
+                        Map<String, Object> answered = host.chooseAction("You", Map.of("choice", idx != null ? idx : "no"));
+                        Assert.assertTrue("answer rejected: " + answered + " for " + d, Boolean.TRUE.equals(answered.get("success")));
                         continue;
                     }
                     Map<String, Object> board = GameHostTest.board(d);
@@ -121,7 +146,7 @@ public class AutoPayGameTest {
         } finally {
             host.end();
         }
-        Outcome out = new Outcome(manaPrompts, cast, tapped, untapped, life, log);
+        Outcome out = new Outcome(manaPrompts, cast, tapped, untapped, life, log, prompts);
         LOG.info(spell + " with " + List.of(battlefield) + " -> " + out);
         return out;
     }
@@ -218,6 +243,30 @@ public class AutoPayGameTest {
         Outcome o = play("Mind Stone", "Crystal Vein", "Forest");
         paid(o, "Crystal Vein", "Forest");
         Assert.assertTrue("the Vein was not sacrificed: " + o, o.tapped().contains("Crystal Vein"));
+    }
+
+    /**
+     * What a browser's multi-select relies on: after a source is picked in
+     * the prompt, the engine asks again for what is still owed, offering the
+     * untapped sources under the same ids, until the cost is met — and stops
+     * asking the moment the rest is no longer the player's choice.
+     */
+    @Test(timeout = 240_000)
+    public void aPromptAnsweredWithASourceComesBackForTheRest() throws Exception {
+        Outcome o = play("Grizzly Bears", List.of("Forest", "Island"), "Forest", "Island", "Swamp");
+        Assert.assertTrue(o.cast());
+        Assert.assertEquals("two prompts: " + o.prompts(), 2, o.manaPrompts());
+        Assert.assertTrue("the first asks for the whole cost: " + o.prompts(), o.prompts().get(0).startsWith("Pay {1}{G}"));
+        Assert.assertTrue("the second asks for what is left: " + o.prompts(), o.prompts().get(1).startsWith("Pay {1}"));
+        Assert.assertFalse("the tapped Forest is no longer offered: " + o.prompts(), o.prompts().get(1).contains("Forest#"));
+        Assert.assertTrue("the Island is offered under its id again: " + o.prompts(), o.prompts().get(1).contains("Island#"));
+        Assert.assertEquals(Set.of("Forest", "Island"), o.tapped());
+        Assert.assertEquals(Set.of("Swamp"), o.untapped());
+        // Forest first, then the rest is forced (only the Island is left for {1}{G}'s {1}... no: {G} paid, {1} from Island or Swamp — asked).
+        // Island first for {1}{G}: the {G} left has one clean source, so the engine pays it without asking again.
+        Outcome forced = play("Grizzly Bears", List.of("Island"), "Forest", "Island", "Swamp");
+        Assert.assertEquals("one prompt, the rest was forced: " + forced.prompts(), 1, forced.manaPrompts());
+        Assert.assertEquals(Set.of("Forest", "Island"), forced.tapped());
     }
 
     @Test(timeout = 240_000)
