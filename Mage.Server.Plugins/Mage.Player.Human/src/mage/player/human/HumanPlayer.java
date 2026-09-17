@@ -2128,29 +2128,6 @@ public class HumanPlayer extends PlayerImpl {
                         .map(p -> p.getId())
                         .collect(Collectors.toList());
                 options.put(Constants.Option.POSSIBLE_BLOCKERS, (Serializable) possibleBlockers);
-                // Pair each blocker with the attackers it may legally block. The engine already
-                // decides this per blocker in selectCombatGroup; publishing it here means a client
-                // can present a legal choice instead of guessing and being rejected. Same
-                // canBlock() predicate, so the two can never disagree.
-                HashMap<UUID, java.util.List<UUID>> blockableAttackers = new HashMap<>();
-                Set<UUID> attackingCreatures = new TargetAttackingCreature().possibleTargets(playerId, null, game);
-                for (UUID blockerId : possibleBlockers) {
-                    Permanent possibleBlocker = game.getPermanent(blockerId);
-                    if (possibleBlocker == null) {
-                        continue;
-                    }
-                    java.util.List<UUID> blockable = new java.util.ArrayList<>();
-                    for (UUID attackerId : attackingCreatures) {
-                        CombatGroup group = game.getCombat().findGroup(attackerId);
-                        if (group != null && group.canBlock(possibleBlocker, game)) {
-                            blockable.add(attackerId);
-                        }
-                    }
-                    if (!blockable.isEmpty()) {
-                        blockableAttackers.put(blockerId, blockable);
-                    }
-                }
-                options.put(Constants.Option.BLOCKABLE_ATTACKERS, blockableAttackers);
                 game.fireSelectEvent(playerId, "Select blockers", options);
             }
             waitForResponse(game);
