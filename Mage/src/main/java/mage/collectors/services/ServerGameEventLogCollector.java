@@ -221,6 +221,33 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
             return;
         }
 
+        // A question still open when the game ends (the app ended or parked
+        // it, or a report was filed at that very question) is written as a
+        // decision with an "open" response, so the record shows what was
+        // being asked; a replay skips it (ReplayScript) and the live game
+        // asks it again.
+        List<PendingQuery> open = new ArrayList<>(gel.drainPendingQueries());
+        open.sort(Comparator.comparingInt(p -> p.gameSeq));
+        for (PendingQuery pending : open) {
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("seq", pending.gameSeq);
+            event.put("type", "decision");
+            event.put("query_type", pending.queryType.name());
+            Player player = game.getPlayer(pending.playerId);
+            event.put("player", player != null ? player.getName() : pending.playerId.toString());
+            if (pending.message != null) {
+                event.put("message", stripHtml(pending.message));
+            }
+            Map<String, Object> choices = buildChoices(game, pending);
+            if (choices != null && !choices.isEmpty()) {
+                event.put("choices", choices);
+            }
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("type", "open");
+            event.put("response", response);
+            gel.writeLine(toJson(event));
+        }
+
         int seq = game.nextGameSeq();
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("seq", seq);
@@ -553,6 +580,13 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
 
         PendingQuery consumePendingQuery(UUID playerId) {
             return pendingQueries.remove(playerId);
+        }
+
+        /** Every question still open, and the buffer emptied. */
+        Collection<PendingQuery> drainPendingQueries() {
+            List<PendingQuery> open = new ArrayList<>(pendingQueries.values());
+            pendingQueries.clear();
+            return open;
         }
 
         synchronized void close() {
