@@ -1324,15 +1324,17 @@ public abstract class GameImpl implements Game {
             // Seed the game RNG for deterministic shuffling, coin flips, etc.
             RandomUtil.setSeed(42);
         }
-        // A seeded game (GameOptions.gameSeed) is seeded here, immediately before
-        // the shuffle, so nothing consuming RandomUtil between startup and this
-        // point shifts the stream. RandomUtil.random is process-global: games
-        // running CONCURRENTLY in one JVM interleave their draws and neither can
-        // be replayed from its seed; sequential games are sound.
+        // A seeded game (GameOptions.gameSeed) gets a generator of its own here,
+        // bound to this thread -- the game thread, where every shuffle, toss and
+        // coin flip happens -- immediately before the first shuffle, so nothing
+        // consuming RandomUtil between startup and this point shifts the stream,
+        // and games running at the same time in one JVM never interleave their
+        // draws: each replays from its own seed (RandomUtil.bindThread). Unseeded
+        // games keep drawing from the shared generator.
         Long gameSeed = resolveGameSeed();
         if (gameSeed != null) {
-            RandomUtil.setSeed(gameSeed);
-            logger.info("Game RNG seeded with " + gameSeed);
+            RandomUtil.bindThread(gameSeed);
+            logger.info("Game RNG seeded with " + gameSeed + " on " + Thread.currentThread().getName());
         }
         if (!gameOptions.skipInitShuffling) { //don't shuffle in test mode for card injection on top of player's libraries
             java.util.Collection<Player> toShuffle = state.getPlayers().values();
