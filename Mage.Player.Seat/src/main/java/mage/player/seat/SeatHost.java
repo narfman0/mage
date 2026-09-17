@@ -162,7 +162,9 @@ public final class SeatHost {
                 GameHost.Config cfg = new GameHost.Config(gameId, String.valueOf(args.getOrDefault("format", "duel")),
                         seed == null ? null : ((Number) seed).longValue(),
                         args.get("game_log_dir") == null ? null : String.valueOf(args.get("game_log_dir")),
-                        seats, Boolean.TRUE.equals(args.get("offer_mana_sources")));
+                        seats, Boolean.TRUE.equals(args.get("offer_mana_sources")),
+                        args.get("replay_from") == null ? null : String.valueOf(args.get("replay_from")),
+                        args.get("hold_through_seq") == null ? 0 : ((Number) args.get("hold_through_seq")).intValue());
                 GameHost host = new GameHost(cfg);
                 games.put(gameId, host);
                 host.start();
