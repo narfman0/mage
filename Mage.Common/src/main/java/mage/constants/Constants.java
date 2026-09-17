@@ -54,6 +54,10 @@ public final class Constants {
         ;
         public static final String POSSIBLE_ATTACKERS = "possibleAttackers";
         public static final String POSSIBLE_BLOCKERS = "possibleBlockers";
+        // Map of blocker id -> the attackers that blocker may legally block.
+        // POSSIBLE_BLOCKERS says only which creatures may block *something*; without the
+        // pairing a client has to guess which block is legal, and a wrong guess is rejected.
+        public static final String BLOCKABLE_ATTACKERS = "blockableAttackers";
         public static final String SPECIAL_BUTTON = "specialButton";
         // used to control automatic answers of optional effects
         public static final String ORIGINAL_ID = "originalId";
