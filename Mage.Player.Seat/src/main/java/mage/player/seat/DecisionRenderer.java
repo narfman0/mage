@@ -14,6 +14,7 @@ import mage.util.MultiAmountMessage;
 import mage.view.CardView;
 import mage.view.CardsView;
 import mage.view.CombatGroupView;
+import mage.view.CommanderView;
 import mage.view.GameView;
 import mage.view.ManaPoolView;
 import mage.view.PermanentView;
@@ -82,7 +83,7 @@ public final class DecisionRenderer {
             ctx.append(" YOUR_MAIN");
         }
         r.put("context", ctx.toString());
-        r.put("board", views.players(view, me));
+        r.put("board", views.players(view, me, game));
         List<Map<String, Object>> stack = views.stackItems(view, me, false);
         if (!stack.isEmpty()) {
             r.put("stack", stack);
@@ -194,6 +195,19 @@ public final class DecisionRenderer {
                     // it and the mana floats until spent — tapping your own lands first.
                     c.put("action", "mana");
                     c.put("mana_abilities", new ArrayList<>(manaNames));
+                } else if (cv instanceof CommanderView && views.findPermanentView(objectId, view) == null) {
+                    // The commander in the command zone: casting it is the play,
+                    // and the tax is part of what it costs right now.
+                    c.put("action", "cast");
+                    c.put("from", "command");
+                    String manaCost = cv.getManaCostStr();
+                    if (manaCost != null && !manaCost.isEmpty()) {
+                        c.put("mana_cost", manaCost);
+                    }
+                    if (cv.isCreature() && cv.getPower() != null) {
+                        c.put("power", cv.getPower());
+                        c.put("toughness", cv.getToughness());
+                    }
                 } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null)) {
                     c.put("action", "activate");
                     Set<String> manaSet = new HashSet<>(manaNames);
