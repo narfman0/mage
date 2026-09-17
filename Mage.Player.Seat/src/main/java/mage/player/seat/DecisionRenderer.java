@@ -1,5 +1,6 @@
 package mage.player.seat;
 
+import mage.MageObject;
 import mage.abilities.Ability;
 import mage.cards.Card;
 import mage.choices.Choice;
@@ -42,6 +43,8 @@ import java.util.regex.Pattern;
  * input: engine objects rather than a client message re-parsed.
  */
 public final class DecisionRenderer {
+
+    private static final org.apache.log4j.Logger LOG = org.apache.log4j.Logger.getLogger(DecisionRenderer.class);
 
     private static final Pattern[] SYMBOLS = {
         Pattern.compile("\\x7b.{0,2}W.{0,2}\\x7d"), Pattern.compile("\\x7b.{0,2}U.{0,2}\\x7d"),
@@ -119,7 +122,7 @@ public final class DecisionRenderer {
         r.putAll(situation(game, player, view));
         List<Object> backing = switch (e.getQueryType()) {
             case ASK -> ask(r, e, view);
-            case SELECT -> select(r, e, view, offerManaSources);
+            case SELECT -> select(r, e, game, view, offerManaSources);
             case PICK_TARGET -> target(r, e, game, view, player.getId());
             case PICK_ABILITY -> pickAbility(r, e, game, view, player.getId());
             case PLAY_MANA, PLAY_X_MANA -> mana(r, e, view);
@@ -165,7 +168,7 @@ public final class DecisionRenderer {
     }
 
     @SuppressWarnings("unchecked")
-    private List<Object> select(Map<String, Object> r, PlayerQueryEvent e, GameView view, boolean offerManaSources) {
+    private List<Object> select(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, boolean offerManaSources) {
         r.put("action_type", "GAME_SELECT");
         List<Map<String, Object>> choices = new ArrayList<>();
         List<Object> backing = new ArrayList<>();
@@ -178,6 +181,14 @@ public final class DecisionRenderer {
             }).thenComparingInt(entry -> views.sequence(entry.getKey())));
             for (Map.Entry<UUID, PlayableObjectStats> entry : sorted) {
                 UUID objectId = entry.getKey();
+                // A face of a double-faced or split card is its own object to the
+                // engine, keyed beside the main card that carries the same plays;
+                // the views know only the main card, so the face showed as
+                // "Unknown (3cc3a2fd) (activate)" (a report, 2026-09-17).
+                Card asCard = game.getCard(objectId);
+                if (asCard != null && !asCard.getMainCard().getId().equals(objectId)) {
+                    continue;
+                }
                 PlayableObjectStats stats = entry.getValue();
                 List<String> abilityNames = stats.getPlayableAbilityNames();
                 List<String> manaNames = stats.getAllManaAbilityNames();
@@ -189,7 +200,20 @@ public final class DecisionRenderer {
                 Map<String, Object> c = new HashMap<>();
                 c.put("index", choices.size());
                 c.put("id", views.shortId(objectId));
-                c.put("name", cv != null ? views.displayName(cv) : "Unknown (" + objectId.toString().substring(0, 8) + ")");
+                if (cv != null) {
+                    c.put("name", views.displayName(cv));
+                } else {
+                    // Not in any zone the views render: name it from the game and say
+                    // where it is, and log it — every one of these is a gap to close.
+                    MageObject obj = game.getObject(objectId);
+                    Zone zone = game.getState().getZone(objectId);
+                    c.put("name", obj != null ? obj.getName() : "Unknown (" + objectId.toString().substring(0, 8) + ")");
+                    if (zone != null) {
+                        c.put("zone", zone.name().toLowerCase());
+                    }
+                    LOG.warn("playable object not in the view: " + objectId + " " + (obj != null ? obj.getClass().getSimpleName() + " " + obj.getName() : "?")
+                            + " zone=" + zone + " abilities=" + abilityNames);
+                }
                 if (manaOnly) {
                     // A permanent whose only plays are mana abilities: choosing it taps
                     // it and the mana floats until spent — tapping your own lands first.
