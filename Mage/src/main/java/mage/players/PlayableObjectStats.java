@@ -29,6 +29,8 @@ public class PlayableObjectStats implements Serializable, Copyable<PlayableObjec
     // All mana abilities (tap and non-tap) — uses isManaAbility() which covers
     // BasicManaAbility, SimpleManaAbility, DynamicManaAbility, ConditionalManaAbility, etc.
     List<PlayableObjectRecord> allManaAbilities = new ArrayList<>();
+    // Every spell ability (any type) — whether the object can be cast at all
+    List<PlayableObjectRecord> spellAbilities = new ArrayList<>();
 
     public PlayableObjectStats() {
     }
@@ -43,6 +45,7 @@ public class PlayableObjectStats implements Serializable, Copyable<PlayableObjec
         this.basicCastAbilities.clear();
         this.other.clear();
         this.allManaAbilities.clear();
+        this.spellAbilities.clear();
 
         // split abilities to types (it allows to enable or disable playable icon)
         for (ActivatedAbility ability : activatedAbilities) {
@@ -71,6 +74,10 @@ public class PlayableObjectStats implements Serializable, Copyable<PlayableObjec
             if (ability.isManaAbility()) {
                 this.allManaAbilities.add(new PlayableObjectRecord(ability.getId(), shortInfo));
             }
+            // Every way to cast the object, whatever the spell ability's type
+            if (ability instanceof SpellAbility) {
+                this.spellAbilities.add(new PlayableObjectRecord(ability.getId(), shortInfo));
+            }
         }
     }
 
@@ -90,6 +97,9 @@ public class PlayableObjectStats implements Serializable, Copyable<PlayableObjec
         for (PlayableObjectRecord rec : source.allManaAbilities) {
             this.allManaAbilities.add(rec.copy());
         }
+        for (PlayableObjectRecord rec : source.spellAbilities) {
+            this.spellAbilities.add(rec.copy());
+        }
     }
 
     @Override
@@ -102,6 +112,17 @@ public class PlayableObjectStats implements Serializable, Copyable<PlayableObjec
                 + this.basicPlayAbilities.size()
                 + this.basicCastAbilities.size()
                 + this.other.size();
+    }
+
+    /** Whether the object can be cast now — any spell ability, a transforming
+     *  or modal face's included (those are not BASE, so not "basic casts"). */
+    public boolean hasCast() {
+        return !this.spellAbilities.isEmpty();
+    }
+
+    /** Whether the object can be played as a land now. */
+    public boolean hasBasicPlay() {
+        return !this.basicPlayAbilities.isEmpty();
     }
 
     public List<String> getPlayableAbilityNames() {

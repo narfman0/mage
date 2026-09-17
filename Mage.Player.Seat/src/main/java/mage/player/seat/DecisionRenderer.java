@@ -130,7 +130,7 @@ public final class DecisionRenderer {
             case CHOOSE_MODE -> modes(r, e);
             case CHOOSE_CHOICE -> choice(r, e);
             case CHOOSE_PILE -> pile(r, e, game);
-            case AMOUNT -> amount(r, e);
+            case AMOUNT -> amount(r, e, game, player);
             case MULTI_AMOUNT -> multiAmount(r, e);
             default -> {
                 r.put("action_type", e.getQueryType().name());
@@ -232,7 +232,12 @@ public final class DecisionRenderer {
                         c.put("power", cv.getPower());
                         c.put("toughness", cv.getToughness());
                     }
-                } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null)) {
+                } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null)
+                        || (!stats.hasCast() && !stats.hasBasicPlay())) {
+                    // Not castable or playable as a land from where it is — a hand
+                    // card whose play is a granted ability (Satoru's ninjutsu on a
+                    // Blightsteel Colossus, cycling) is an activation, not a
+                    // twelve-mana cast.
                     c.put("action", "activate");
                     Set<String> manaSet = new HashSet<>(manaNames);
                     List<String> nonMana = new ArrayList<>();
@@ -569,11 +574,24 @@ public final class DecisionRenderer {
         return out;
     }
 
-    private List<Object> amount(Map<String, Object> r, PlayerQueryEvent e) {
+    private List<Object> amount(Map<String, Object> r, PlayerQueryEvent e, Game game, SeatPlayer player) {
         r.put("action_type", "GAME_GET_AMOUNT");
         r.put("response_type", "amount");
         r.put("min", e.getMin());
-        r.put("max", e.getMax());
+        int max = e.getMax();
+        if (max == Integer.MAX_VALUE && e.getMessage() != null && e.getMessage().contains("{X}")) {
+            // The engine announces {X} with no upper bound (VariableManaCost.maxX);
+            // the most mana the seat could make is the bound a person or a pilot
+            // can use — the largest of the mana options, the way getPlayable sizes
+            // affordability.
+            int available = 0;
+            for (mage.Mana mana : player.getManaAvailable(game)) {
+                available = Math.max(available, mana.count());
+            }
+            r.put("mana_available", available);
+            max = Math.max(e.getMin(), available);
+        }
+        r.put("max", max);
         return List.of();
     }
 
