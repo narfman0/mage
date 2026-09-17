@@ -1,5 +1,6 @@
 package mage.player.seat;
 
+import mage.cards.Card;
 import mage.cards.decks.Deck;
 import mage.cards.decks.DeckCardLists;
 import mage.cards.decks.importer.DeckImporter;
@@ -126,6 +127,15 @@ public final class GameHost {
             game.addPlayer(player, deck);
             match.addPlayer(player, deck);
             players.add(player);
+            // Short ids in a fixed order (seat order, then the decklist's order) so
+            // a card is the same "p12" in the game and in its resumed replay,
+            // whatever is rendered first.
+            for (Card card : deck.getCards()) {
+                game.getShortIdRegistry().getOrAssign(card.getId());
+            }
+            for (Card card : deck.getSideboard()) {
+                game.getShortIdRegistry().getOrAssign(card.getId());
+            }
         }
         game.addTableEventListener(event -> {
             if (event.getEventType() == TableEvent.EventType.INFO && event.getMessage() != null) {
