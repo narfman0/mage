@@ -40,11 +40,13 @@ final class ScriptedSeat {
                     return args;
                 }
                 if ("declare_blockers".equals(combat)) {
+                    Object incoming = d.get("incoming_attackers");
                     for (Map<String, Object> c : choices) {
-                        Object canBlock = c.get("can_block");
-                        if ("blocker".equals(c.get("choice_type")) && canBlock instanceof List<?> l && !l.isEmpty()) {
+                        if ("blocker".equals(c.get("choice_type")) && incoming instanceof List<?> l && !l.isEmpty()) {
                             blocks++;
-                            args.put("blockers", c.get("id") + ":" + l.get(0));
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> first = (Map<String, Object>) l.get(0);
+                            args.put("blockers", c.get("id") + ":" + first.get("id"));
                             return args;
                         }
                     }
