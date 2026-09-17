@@ -245,6 +245,7 @@
         <module>Mage.Client</module>
         <module>Mage.Plugins</module>
         <module>Mage.Server.Plugins</module>
+        <module>Mage.Player.Seat</module>
         <module>Mage.Server.Console</module>
         <module>Mage.Tests</module>
         <module>Mage.Verify</module>
