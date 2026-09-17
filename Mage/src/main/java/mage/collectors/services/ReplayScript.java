@@ -80,6 +80,9 @@ public final class ReplayScript {
             String type = str(e, "type");
             if ("decision".equals(type)) {
                 JsonObject r = e.has("response") && e.get("response").isJsonObject() ? e.getAsJsonObject("response") : new JsonObject();
+                if ("open".equals(str(r, "type"))) {
+                    continue; // a question the game ended on, never answered: the live game asks it again
+                }
                 decisions.add(new Decision(
                     e.has("seq") ? e.get("seq").getAsInt() : -1,
                     str(e, "player"),
