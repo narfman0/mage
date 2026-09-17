@@ -174,6 +174,68 @@ public class GameHostTest {
         Assert.assertTrue("Growing Rites was castable at some point (" + script.seen.size() + " decisions)", sawRites);
     }
 
+    /**
+     * Changing your mind after activating something (report 89e175786e:
+     * "I clicked my Terramorphic Expanse to activate it and changed my mind,
+     * then clicked Pass / Decline and the engine rejected the action"). On this
+     * engine: the activation is offered, taken, and every question the
+     * activation raises (a search, a picker) accepts "no" and the game goes on.
+     */
+    @Test(timeout = 240_000)
+    public void activationCanBeBackedOutOf() throws Exception {
+        String deck = "src/test/resources/decks/expanse_forests.dck";
+        GameHost host = new GameHost(new GameHost.Config("expanse", "duel", 6L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", deck, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)), true));
+        ScriptedSeat script = new ScriptedSeat();
+        host.start();
+        boolean activated = false;
+        List<String> afterActivation = new ArrayList<>();
+        int turnAtActivation = -1;
+        try {
+            for (int i = 0; i < 300; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                Assert.assertNull("render error: " + d.get("error"), d.get("error"));
+                String context = String.valueOf(d.get("context"));
+                int turn = Integer.parseInt(context.substring(1, context.indexOf(' ')));
+                Map<String, Object> args;
+                if (activated && afterActivation.size() < 4) {
+                    // Everything the activation raises: decline it.
+                    afterActivation.add(d.get("action_type") + "/" + d.get("response_type") + " " + d.get("message"));
+                    args = Map.of("choice", "no");
+                    if (turn > turnAtActivation + 1) {
+                        break;
+                    }
+                } else if (activated && turn > turnAtActivation + 1) {
+                    break;
+                } else {
+                    Map<String, Object> expanse = ScriptedSeat.choices(d).stream()
+                            .filter(c -> "Terramorphic Expanse".equals(c.get("name")) && "activate".equals(c.get("action"))).findFirst().orElse(null);
+                    Map<String, Object> asLand = ScriptedSeat.choices(d).stream()
+                            .filter(c -> "Terramorphic Expanse".equals(c.get("name")) && "land".equals(c.get("action"))).findFirst().orElse(null);
+                    if (expanse != null) {
+                        activated = true;
+                        turnAtActivation = turn;
+                        args = Map.of("choice", String.valueOf(expanse.get("index")));
+                    } else if (asLand != null) {
+                        args = Map.of("choice", String.valueOf(asLand.get("index"))); // get it onto the battlefield first
+                    } else {
+                        args = script.answer(d);
+                    }
+                }
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+        } finally {
+            host.end();
+        }
+        Assert.assertTrue("the activation was offered and taken (" + script.seen.size() + " decisions)", activated);
+        LOG.info("after activating Terramorphic Expanse and declining: " + afterActivation);
+        Assert.assertFalse("questions followed the activation", afterActivation.isEmpty());
+    }
+
     @SuppressWarnings("unchecked")
     static Map<String, Object> board(Map<String, Object> d) {
         return ((List<Map<String, Object>>) d.get("board")).get(0);
