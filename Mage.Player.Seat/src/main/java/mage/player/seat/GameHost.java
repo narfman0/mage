@@ -51,8 +51,16 @@ public final class GameHost {
     public record SeatSpec(String name, String kind, String deck, int skill) {
     }
 
+    /**
+     * {@code replayFrom} names a recorded engine log whose decisions the
+     * replay feeder answers first (resume, fullpod docs/save-resume.md); seats
+     * see no question with a seq at or below {@code holdThroughSeq}.
+     */
     public record Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats,
-                         boolean offerManaSources) {
+                         boolean offerManaSources, String replayFrom, int holdThroughSeq) {
+        public Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats, boolean offerManaSources) {
+            this(gameId, format, seed, gameLogDir, seats, offerManaSources, null, 0);
+        }
     }
 
     private enum Kind { SELECT_ATTACKERS, SELECT_BLOCKERS, PICK_TARGET, OTHER }
@@ -95,6 +103,7 @@ public final class GameHost {
         GameOptions options = new GameOptions();
         options.gameLogDir = config.gameLogDir();
         options.gameSeed = config.seed();
+        options.replayFrom = config.replayFrom();
         game.setGameOptions(options);
         views = new Views(game.getShortIdRegistry());
         renderer = new DecisionRenderer(views);
@@ -180,6 +189,9 @@ public final class GameHost {
         }
         int seq = game.nextGameSeq();
         DataCollectorServices.getInstance().onPlayerQuery(game, e, seq);
+        if (config.replayFrom() != null && seq <= config.holdThroughSeq()) {
+            return; // the replay feeder answers this one
+        }
         if (answerFromBatch(seat, e)) {
             return;
         }
