@@ -6,6 +6,7 @@ import mage.constants.ManaType;
 import mage.MageObject;
 import mage.abilities.Ability;
 import mage.cards.Card;
+import mage.constants.Zone;
 import mage.game.Game;
 import mage.game.events.PlayerQueryEvent;
 import mage.game.permanent.Permanent;
@@ -312,6 +313,13 @@ public class ReplayFeederCollector extends EmptyDataCollector {
         List<UUID> out = new ArrayList<>();
         if (event.getTargets() != null) {
             out.addAll(event.getTargets());
+        }
+        if (event.getQueryType() == PlayerQueryEvent.QueryType.SELECT) {
+            // A priority window: what the player may play right now (what a client is offered).
+            Player player = game.getPlayer(event.getPlayerId());
+            if (player != null) {
+                out.addAll(player.getPlayableObjects(game, Zone.ALL).getObjects().keySet());
+            }
         }
         if (event.getCards() != null) {
             out.addAll(event.getCards());
