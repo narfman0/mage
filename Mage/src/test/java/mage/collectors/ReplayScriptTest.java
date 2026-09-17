@@ -49,10 +49,26 @@ class ReplayScriptTest {
     }
 
     @Test
+    void modeChoicesCarryTheirIndexAndText() {
+        ReplayScript s = ReplayScript.parse(List.of(
+            "{\"seq\":125,\"type\":\"decision\",\"player\":\"A\",\"query_type\":\"CHOOSE_MODE\","
+                + "\"response\":{\"type\":\"uuid\",\"id\":\"p66\",\"mode_index\":0,\"name\":\"1. Boros Charm deals 4 damage to target player or planeswalker.\"}}",
+            "{\"seq\":126,\"type\":\"decision\",\"player\":\"A\",\"query_type\":\"SELECT\",\"response\":{\"type\":\"uuid\",\"id\":\"p7\",\"name\":\"Island\"}}"
+        ));
+        ReplayScript.Decision mode = s.next("A");
+        assertEquals(0, mode.modeIndex());
+        assertNull(mode.abilityIndex());
+        assertEquals("1. Boros Charm deals 4 damage to target player or planeswalker.", mode.name());
+        assertNull(s.next("A").modeIndex());
+    }
+
+    @Test
     void normalizeStripsEveryEngineRef() {
         assertEquals("Bolt targets Memnite", ReplayScript.normalizeLog("Bolt [1ab] targets Memnite [c70]"));
         assertEquals("AI-003-04e0's library is shuffled",
             ReplayScript.normalizeLog("<font color='#20B2AA'>AI-003-04e0</font>'s library is shuffled"));
         assertEquals("", ReplayScript.normalizeLog(null));
+        // The recorder's line went through Jsoup, which collapses whitespace; a live one may not have.
+        assertEquals("Pile 1, going to HAND: (none)", ReplayScript.normalizeLog("Pile 1, going to HAND:  (none)"));
     }
 }

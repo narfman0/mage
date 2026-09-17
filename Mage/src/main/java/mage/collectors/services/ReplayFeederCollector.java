@@ -280,6 +280,27 @@ public class ReplayFeederCollector extends EmptyDataCollector {
             throw new IllegalStateException("recorded ability choice " + d.id() + " (" + d.name() + ") at seq " + d.seq()
                 + " matches none of the " + abilities.size() + " abilities offered");
         }
+        // A mode's id is new every game, and so are the short ids of the
+        // Done and Cancel entries: the recorded text, then the position.
+        Map<UUID, String> modes = event != null ? event.getModes() : null;
+        if (modes != null && !modes.isEmpty()) {
+            if (d.name() != null) {
+                String wanted = ReplayScript.normalizeLog(d.name());
+                for (Map.Entry<UUID, String> entry : modes.entrySet()) {
+                    if (wanted.equals(ReplayScript.normalizeLog(entry.getValue()))) {
+                        return entry.getKey();
+                    }
+                }
+            }
+            if (d.modeIndex() != null && d.modeIndex() >= 0 && d.modeIndex() < modes.size()) {
+                return new ArrayList<>(modes.keySet()).get(d.modeIndex());
+            }
+            if (modes.size() == 1) {
+                return modes.keySet().iterator().next();
+            }
+            throw new IllegalStateException("recorded mode choice " + d.id() + " (" + d.name() + ") at seq " + d.seq()
+                + " matches none of the " + modes.size() + " modes offered");
+        }
         ShortIdRegistry registry = game.getShortIdRegistry();
         UUID target = registry.tryResolve(d.id());
         if (target != null && d.name() != null) {
