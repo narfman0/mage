@@ -172,7 +172,9 @@ public final class SeatHost {
                         args.get("game_log_dir") == null ? null : String.valueOf(args.get("game_log_dir")),
                         seats, Boolean.TRUE.equals(args.get("offer_mana_sources")),
                         args.get("replay_from") == null ? null : String.valueOf(args.get("replay_from")),
-                        args.get("hold_through_seq") == null ? 0 : ((Number) args.get("hold_through_seq")).intValue());
+                        args.get("hold_through_seq") == null ? 0 : ((Number) args.get("hold_through_seq")).intValue(),
+                        args.get("free_mulligans") == null ? 0 : ((Number) args.get("free_mulligans")).intValue(),
+                        args.get("starting_player") == null ? "host" : String.valueOf(args.get("starting_player")));
                 GameHost host = new GameHost(cfg);
                 games.put(gameId, host);
                 host.start();
