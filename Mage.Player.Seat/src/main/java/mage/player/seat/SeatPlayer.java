@@ -90,7 +90,7 @@ public class SeatPlayer extends HumanPlayer {
         if (autoPay && unpaid != null && !mustAsk(abilityToCast, game)) {
             Map<UUID, ActivatedManaAbilityImpl> abilities = new HashMap<>();
             Map<UUID, Permanent> permanents = new HashMap<>();
-            List<AutoPay.Source> sources = cleanSources(abilityToCast, game, abilities, permanents);
+            List<AutoPay.Source> sources = sources(abilityToCast, game, askWhenAmbiguous, abilities, permanents);
             List<AutoPay.Pip> pips = pips(unpaid);
             AutoPay.Plan plan = AutoPay.plan(pips, sources);
             if (LOG.isDebugEnabled()) {
@@ -218,28 +218,41 @@ public class SeatPlayer extends HumanPlayer {
     }
 
     /**
-     * The untapped sources the payer may use for a person: a plain
-     * tap-for-mana ability with no effect beyond the mana, on a permanent
-     * that is not a creature, wears no attachment, has no becomes-tapped
-     * trigger, and makes unrestricted mana. Anything else — a sacrifice or
-     * life cost (Crystal Vein's second ability, Mana Confluence), Ancient
-     * Tomb's damage, City of Brass's trigger, a Powerstone's conditional
-     * mana, a mana creature — is the person's call, made by tapping it
-     * themselves or in the prompt.
+     * The untapped sources the payer may plan with. A tap-only mana ability
+     * (no mana, sacrifice, life or counter cost) never spends anything for
+     * you; an ability with such a cost is nobody's to use but the player.
+     * A source is <em>clean</em> when nothing but the mana happens: no
+     * effect beyond it (Ancient Tomb's damage), no becomes-tapped trigger
+     * (City of Brass), not a creature, no attachment, and unrestricted mana
+     * (a Powerstone's is never planned with — its condition isn't
+     * modelled). A person's seat ({@code cleanOnly}) plans over clean
+     * sources only: the rest are theirs to tap, at priority or in the
+     * prompt. A pilot has no one to ask, so it plans over every tap-only
+     * source and prefers the clean ones.
      */
-    private List<AutoPay.Source> cleanSources(Ability abilityToCast, Game game, Map<UUID, ActivatedManaAbilityImpl> abilities, Map<UUID, Permanent> permanents) {
+    private List<AutoPay.Source> sources(Ability abilityToCast, Game game, boolean cleanOnly, Map<UUID, ActivatedManaAbilityImpl> abilities, Map<UUID, Permanent> permanents) {
         List<AutoPay.Source> sources = new ArrayList<>();
         for (Permanent perm : game.getBattlefield().getAllActivePermanents(playerId)) {
             if (abilityToCast != null && perm.getId().equals(abilityToCast.getSourceId())) {
                 continue;
             }
-            if (perm.isTapped() || !cleanPermanent(perm, game)) {
+            if (perm.isTapped()) {
+                continue;
+            }
+            boolean clean = cleanPermanent(perm, game);
+            if (cleanOnly && !clean) {
                 continue;
             }
             List<AutoPay.Output> outputs = new ArrayList<>();
             for (ActivatedManaAbilityImpl ability : getUseableManaAbilities(perm, Zone.BATTLEFIELD, game).values()) {
-                if (!cleanAbility(ability)) {
+                if (ability.getAbilityType() != AbilityType.ACTIVATED_MANA || ability.isPoolDependant() || !tapOnly(ability) || conditional(ability)) {
                     continue;
+                }
+                if (!cleanAbility(ability)) {
+                    if (cleanOnly) {
+                        continue;
+                    }
+                    clean = false;
                 }
                 for (Mana m : ability.getNetMana(game)) {
                     if (m instanceof ConditionalMana) {
@@ -260,7 +273,7 @@ public class SeatPlayer extends HumanPlayer {
             // a basic that makes the same mana: keep it its own group.
             boolean more = perm.getAbilities().getActivatedAbilities(Zone.BATTLEFIELD).size() > outputs.stream().map(AutoPay.Output::abilityId).distinct().count();
             permanents.put(perm.getId(), perm);
-            sources.add(new AutoPay.Source(perm.getId(), AutoPay.key(outputs, more ? perm.getName() : null), outputs));
+            sources.add(new AutoPay.Source(perm.getId(), AutoPay.key(outputs, more ? perm.getName() : null, clean), outputs, clean));
         }
         return sources;
     }
@@ -278,16 +291,24 @@ public class SeatPlayer extends HumanPlayer {
         return true;
     }
 
+    /** Nothing but mana happens: every effect is a mana effect. */
     private static boolean cleanAbility(ActivatedManaAbilityImpl ability) {
-        if (ability.getAbilityType() != AbilityType.ACTIVATED_MANA || ability.isPoolDependant() || !tapOnly(ability)) {
-            return false;
-        }
         for (Effect effect : ability.getEffects()) {
-            if (!(effect instanceof ManaEffect) || effect instanceof AddConditionalManaEffect) {
+            if (!(effect instanceof ManaEffect)) {
                 return false;
             }
         }
         return true;
+    }
+
+    /** Mana with a condition on what it may pay for: not modelled, so never planned with. */
+    private static boolean conditional(ActivatedManaAbilityImpl ability) {
+        for (Effect effect : ability.getEffects()) {
+            if (effect instanceof AddConditionalManaEffect) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean anySource(Ability abilityToCast, Game game) {

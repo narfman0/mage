@@ -59,12 +59,15 @@ final class AutoPay {
     }
 
     /**
-     * An untapped clean source. {@code key} is what makes two sources
+     * An untapped source. {@code key} is what makes two sources
      * interchangeable (same outputs, and nothing else about the permanent
      * a player would keep it up for): sources with the same key are one
      * group, and a plan that swaps one for another is the same plan.
+     * {@code clean}: nothing but the mana happens when it is tapped (a
+     * person's seat plans over clean sources only; a pilot's over every
+     * tap-only one, preferring the clean).
      */
-    record Source(UUID id, String key, List<Output> outputs) {
+    record Source(UUID id, String key, List<Output> outputs, boolean clean) {
     }
 
     /** The next tap: the source, the ability, and the kind it should make for the pip it pays. */
@@ -237,24 +240,40 @@ final class AutoPay {
      * A leaves at least as much as plan B when B's untapped sources map
      * one-to-one onto A's with each A source making everything its B source
      * makes (a dual covers a basic, an any-colour rock covers a dual). Two
-     * plans that cover each other are the same plan; a plan covered by a
-     * different one is not a choice anyone would make for mana.
+     * plans that cover each other are the same plan for mana — the one
+     * kept is the pilot's preference among them (tap the Forest, not the
+     * dork that makes the same {G}); a plan covered by a different one is
+     * not a choice anyone would make for mana.
      */
     private List<Terminal> undominated(List<Terminal> all) {
-        List<Terminal> out = new ArrayList<>();
-        for (int i = 0; i < all.size(); i++) {
-            boolean dominated = false;
-            for (int j = 0; j < all.size() && !dominated; j++) {
-                if (i == j) {
-                    continue;
+        // Equivalence classes first: mutual cover.
+        List<List<Terminal>> classes = new ArrayList<>();
+        for (Terminal t : all) {
+            List<Terminal> home = null;
+            for (List<Terminal> c : classes) {
+                if (covers(c.get(0), t) && covers(t, c.get(0))) {
+                    home = c;
+                    break;
                 }
-                boolean jCoversI = covers(all.get(j), all.get(i));
-                boolean iCoversJ = covers(all.get(i), all.get(j));
-                // Strictly covered, or equivalent to an earlier plan already kept.
-                dominated = (jCoversI && !iCoversJ) || (jCoversI && iCoversJ && j < i);
+            }
+            if (home == null) {
+                home = new ArrayList<>();
+                classes.add(home);
+            }
+            home.add(t);
+        }
+        List<Terminal> reps = new ArrayList<>();
+        for (List<Terminal> c : classes) {
+            reps.add(c.size() == 1 ? c.get(0) : pilotChoice(c));
+        }
+        List<Terminal> out = new ArrayList<>();
+        for (int i = 0; i < reps.size(); i++) {
+            boolean dominated = false;
+            for (int j = 0; j < reps.size() && !dominated; j++) {
+                dominated = i != j && covers(reps.get(j), reps.get(i));
             }
             if (!dominated) {
-                out.add(all.get(i));
+                out.add(reps.get(i));
             }
         }
         return out;
@@ -333,13 +352,24 @@ final class AutoPay {
         return true;
     }
 
-    /** For a seat that never asks: waste least, then keep the most kinds of mana up, then the fewest taps. */
+    /**
+     * For a seat that never asks: waste least, then the fewest unclean
+     * taps (a Forest before a dork or an Ancient Tomb), then keep the most
+     * kinds of mana up, then the fewest taps.
+     */
     private Terminal pilotChoice(List<Terminal> candidates) {
         Terminal best = null;
         int bestOverpay = Integer.MAX_VALUE;
+        int bestUnclean = Integer.MAX_VALUE;
         int bestKinds = -1;
         int bestTaps = Integer.MAX_VALUE;
         for (Terminal t : candidates) {
+            int unclean = 0;
+            for (Tap tap : t.taps()) {
+                if (!groups.get(tap.group()).members().get(0).clean()) {
+                    unclean++;
+                }
+            }
             EnumSet<Kind> left = EnumSet.noneOf(Kind.class);
             for (int g = 0; g < groups.size(); g++) {
                 if (t.counts()[g] < groups.get(g).members().size()) {
@@ -356,10 +386,12 @@ final class AutoPay {
             }
             int taps = t.taps().size();
             boolean better = t.overpay() < bestOverpay
-                    || (t.overpay() == bestOverpay && (left.size() > bestKinds || (left.size() == bestKinds && taps < bestTaps)));
+                    || (t.overpay() == bestOverpay && (unclean < bestUnclean
+                    || (unclean == bestUnclean && (left.size() > bestKinds || (left.size() == bestKinds && taps < bestTaps)))));
             if (better) {
                 best = t;
                 bestOverpay = t.overpay();
+                bestUnclean = unclean;
                 bestKinds = left.size();
                 bestTaps = taps;
             }
@@ -368,13 +400,13 @@ final class AutoPay {
     }
 
     /** A source's key from its outputs: the same outputs (and no other reason to keep it up) means interchangeable. */
-    static String key(List<Output> outputs, String distinguishing) {
+    static String key(List<Output> outputs, String distinguishing, boolean clean) {
         List<String> parts = new ArrayList<>();
         for (Output o : outputs) {
             parts.add(o.units().toString());
         }
         parts.sort(String::compareTo);
-        return parts + (distinguishing == null ? "" : "|" + distinguishing);
+        return parts + (clean ? "" : "|unclean") + (distinguishing == null ? "" : "|" + distinguishing);
     }
 
     /** A Mana object as units, in WUBRG-C-any order; generic in an output (rare) is ignored. */
