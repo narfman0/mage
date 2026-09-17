@@ -37,8 +37,8 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
     // must process it in game thread on any priority
     // TODO: is concede/hand view confirmation can broken waiting cycle for other choosing/priority player
     //  (with same response type, with diff response type)???
-    private Boolean asyncWantConcede;
-    private Boolean asyncWantCheat;
+    private volatile Boolean asyncWantConcede;
+    private volatile Boolean asyncWantCheat;
 
     public PlayerResponse() {
         resetAnswers();
@@ -94,6 +94,15 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
         // do not reset async commands -- it's processing independend
         //this.asyncWantConcede = null;
         //this.asyncWantCheat = null;
+    }
+
+    public boolean hasSyncResponse() {
+        return responseString != null
+                || responseUUID != null
+                || responseBoolean != null
+                || responseInteger != null
+                || responseManaType != null
+                || responseManaPlayerId != null;
     }
 
     public String getActiveAction() {
