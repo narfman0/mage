@@ -195,6 +195,16 @@ public abstract class MatchImpl implements Match {
         game.setTableId(this.tableId);
         addGame(); // raises only the number
         shufflePlayers();
+        // Reserved seating (MatchOptions.seatNames): the game's player order —
+        // the turn order — is the seat order, not the join order the shuffle
+        // above started from, so a seeded game reproduces (ReplayFeederCollector).
+        List<String> seatNames = options.getSeatNames();
+        if (seatNames != null && !seatNames.isEmpty()) {
+            this.players.sort(Comparator.comparingInt(mp -> {
+                int i = seatNames.indexOf(mp.getName());
+                return i < 0 ? Integer.MAX_VALUE : i;
+            }));
+        }
         for (MatchPlayer matchPlayer : this.players) {
             if (!matchPlayer.hasQuit() && matchPlayer.getDeck() != null) {
                 matchPlayer.getPlayer().init(game);

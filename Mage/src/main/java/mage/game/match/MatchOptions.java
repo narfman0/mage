@@ -47,8 +47,25 @@ public class MatchOptions implements Serializable {
     protected MatchBufferTime matchBufferTime = MatchBufferTime.NONE; // additional/buffer time limit for each priority before real time ticking starts
     protected MulliganType mulliganType = MulliganType.GAME_DEFAULT;
 
+    protected boolean skipInitShuffling;
+    protected String choosingPlayerName; // null = random die roll, non-null = player with this name wins the toss
+
     protected Collection<DeckCardInfo> perPlayerEmblemCards = Collections.emptySet();
     protected Collection<DeckCardInfo> globalEmblemCards = Collections.emptySet();
+
+    protected String gameLogDir;
+
+    // RNG seed for each game of this match. Null leaves the stream alone.
+    protected Long gameSeed;
+
+    // Recorded event log to replay decisions from (resume). Null plays normally.
+    protected String replayFrom;
+    // Seat reservation by player name, in seat order (null: first free seat of
+    // the right type, i.e. join order). Set by the observer from its players
+    // config so a table's seating — and with it the turn order — is the config's,
+    // not the order the bridges' concurrent joins happened to land in; a resumed
+    // game must seat the same players in the same order as its record.
+    protected java.util.List<String> seatNames;
 
     public MatchOptions(String name, String gameType, boolean multiPlayer) {
         this.name = name;
@@ -286,6 +303,22 @@ public class MatchOptions implements Serializable {
         return mulliganType;
     }
 
+    public boolean isSkipInitShuffling() {
+        return skipInitShuffling;
+    }
+
+    public void setSkipInitShuffling(boolean skipInitShuffling) {
+        this.skipInitShuffling = skipInitShuffling;
+    }
+
+    public String getChoosingPlayerName() {
+        return choosingPlayerName;
+    }
+
+    public void setChoosingPlayerName(String choosingPlayerName) {
+        this.choosingPlayerName = choosingPlayerName;
+    }
+
     public Collection<DeckCardInfo> getPerPlayerEmblemCards() {
         return perPlayerEmblemCards;
     }
@@ -300,5 +333,37 @@ public class MatchOptions implements Serializable {
 
     public void setGlobalEmblemCards(Collection<DeckCardInfo> globalEmblemCards) {
         this.globalEmblemCards = globalEmblemCards;
+    }
+
+    public String getGameLogDir() {
+        return gameLogDir;
+    }
+
+    public void setGameLogDir(String gameLogDir) {
+        this.gameLogDir = gameLogDir;
+    }
+
+    public Long getGameSeed() {
+        return gameSeed;
+    }
+
+    public void setGameSeed(Long gameSeed) {
+        this.gameSeed = gameSeed;
+    }
+
+    public String getReplayFrom() {
+        return replayFrom;
+    }
+
+    public void setReplayFrom(String replayFrom) {
+        this.replayFrom = replayFrom;
+    }
+
+    public java.util.List<String> getSeatNames() {
+        return seatNames;
+    }
+
+    public void setSeatNames(java.util.List<String> seatNames) {
+        this.seatNames = seatNames == null ? null : new java.util.ArrayList<>(seatNames);
     }
 }
