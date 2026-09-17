@@ -2,10 +2,12 @@ name: fullpod engine (Mage.Player.Seat)
 
 # The fullpod branch: upstream XMage at a release tag + our engine commits +
 # Mage.Player.Seat. Builds the engine and runs the seat harness on every push.
+# Not on pin/* tags: a pin is always the branch tip, its check lands on the
+# commit either way, and the second run of the same commit only doubled the
+# bill and raced the first on the runner.
 on:
   push:
     branches: [ "fullpod" ]
-    tags: [ "pin/*" ]
   pull_request:
     branches: [ "fullpod" ]
   workflow_dispatch: {}
