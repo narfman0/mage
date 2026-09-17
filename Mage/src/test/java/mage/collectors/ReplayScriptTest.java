@@ -49,6 +49,18 @@ class ReplayScriptTest {
     }
 
     @Test
+    void anOpenQuestionIsNotADecisionToFeed() {
+        ReplayScript s = ReplayScript.parse(List.of(
+            "{\"seq\":5,\"type\":\"decision\",\"player\":\"A\",\"query_type\":\"ASK\",\"response\":{\"type\":\"boolean\",\"value\":false}}",
+            "{\"seq\":9,\"type\":\"decision\",\"player\":\"A\",\"query_type\":\"SELECT\",\"message\":\"Play spells and abilities\",\"response\":{\"type\":\"open\"}}",
+            "{\"seq\":10,\"type\":\"game_end\",\"winner\":null}"
+        ));
+        assertEquals(1, s.total());
+        assertEquals("ASK", s.next("A").queryType());
+        assertTrue(s.exhausted());
+    }
+
+    @Test
     void modeChoicesCarryTheirIndexAndText() {
         ReplayScript s = ReplayScript.parse(List.of(
             "{\"seq\":125,\"type\":\"decision\",\"player\":\"A\",\"query_type\":\"CHOOSE_MODE\","
