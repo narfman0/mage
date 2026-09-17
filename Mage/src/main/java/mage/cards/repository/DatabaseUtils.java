@@ -1,14 +1,6 @@
 package mage.cards.repository;
 
-import com.j256.ormlite.jdbc.JdbcConnectionSource;
-import com.j256.ormlite.support.ConnectionSource;
-import com.j256.ormlite.support.DatabaseConnection;
 import mage.util.DebugUtil;
-import org.apache.log4j.Logger;
-
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.sql.SQLException;
 
 /**
  * Helper class for database
@@ -16,9 +8,6 @@ import java.sql.SQLException;
  * @author JayDi85
  */
 public class DatabaseUtils {
-
-    private static final Logger logger = Logger.getLogger(DatabaseUtils.class);
-    private static final String H2_FILE_PREFIX = "jdbc:h2:file:";
 
     // warning, do not change names or db format
     // h2
@@ -66,93 +55,6 @@ public class DatabaseUtils {
         }
 
         return res;
-    }
-
-    /**
-     * Open an H2 database connection, retrying on lock contention.
-     *
-     * When multiple JVM processes open the same H2 database concurrently
-     * (e.g. during golden tests), the file lock can race. AUTO_SERVER=TRUE
-     * handles steady-state multi-process access, but the initial lock
-     * acquisition can fail if two JVMs try simultaneously. This method
-     * retries with backoff so the second JVM waits for the first to finish.
-     *
-     * @param url JDBC connection URL from {@link #prepareH2Connection}
-     */
-    public static ConnectionSource openH2ConnectionWithRetry(String url) throws SQLException {
-        int maxAttempts = 5;
-        int baseDelayMs = 500;
-        SQLException lastError = null;
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                JdbcConnectionSource connectionSource = new JdbcConnectionSource(url);
-                DatabaseConnection connection = connectionSource.getReadWriteConnection("h2_open_probe");
-                connectionSource.releaseConnection(connection);
-                return connectionSource;
-            } catch (SQLException e) {
-                lastError = e;
-                if (isUnreadableDatabaseFileError(e)) {
-                    throw createUnreadableDatabaseException(url, e);
-                }
-                if (attempt < maxAttempts) {
-                    logger.warn(
-                            "H2 connection attempt " + attempt + "/" + maxAttempts
-                                    + " failed, retrying in " + (baseDelayMs * attempt) + "ms: " + e.getMessage());
-                    try {
-                        Thread.sleep(baseDelayMs * attempt);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw e;
-                    }
-                }
-            }
-        }
-        throw lastError;
-    }
-
-    static boolean isUnreadableDatabaseFileError(SQLException error) {
-        Throwable current = error;
-        while (current != null) {
-            String message = current.getMessage();
-            if (message != null && message.contains("Unsupported database file version or invalid file header")) {
-                return true;
-            }
-            if ("org.h2.mvstore.MVStoreException".equals(current.getClass().getName())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
-    }
-
-    static IllegalStateException createUnreadableDatabaseException(String url, SQLException cause) {
-        Path dbPath = getH2FilePath(url);
-        if (dbPath == null) {
-            return new IllegalStateException(
-                    "Unreadable H2 database for non-file URL " + url
-                            + ". Delete or migrate the database manually before restarting.",
-                    cause
-            );
-        }
-
-        Path mvStorePath = dbPath.resolveSibling(dbPath.getFileName() + ".mv.db");
-        return new IllegalStateException(
-                "Unreadable H2 database file " + mvStorePath
-                        + ". Delete or migrate the database manually before restarting.",
-                cause
-        );
-    }
-
-    static Path getH2FilePath(String url) {
-        if (!url.startsWith(H2_FILE_PREFIX)) {
-            return null;
-        }
-
-        int paramsPos = url.indexOf(';');
-        String fileName = paramsPos >= 0
-                ? url.substring(H2_FILE_PREFIX.length(), paramsPos)
-                : url.substring(H2_FILE_PREFIX.length());
-        return Paths.get(fileName);
     }
 
     /**
