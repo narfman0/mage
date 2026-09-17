@@ -336,10 +336,30 @@ public final class GameHost {
             r.put("action_pending", false);
             if (!isOver()) {
                 r.put("timed_out", true);
+                // Where the engine is while nobody is asked: the answer to "is it
+                // slow or stuck", in the result and the log.
+                List<String> stack = engineStack(12);
+                r.put("engine_stack", stack);
+                LOG.warn("no decision for " + seatName + " within " + timeoutMs + " ms; game thread at " + String.join(" <- ", stack));
             }
         }
         finish(seat, r);
         return r;
+    }
+
+    /** The top of the game thread's stack, for a stall report. */
+    private List<String> engineStack(int depth) {
+        List<String> out = new ArrayList<>();
+        Thread t = gameThread;
+        if (t == null) {
+            return out;
+        }
+        out.add(t.getState().name());
+        StackTraceElement[] frames = t.getStackTrace();
+        for (int i = 0; i < Math.min(depth, frames.length); i++) {
+            out.add(frames[i].toString());
+        }
+        return out;
     }
 
     /** Game-over flags and this seat's unread messages, on every result. */
