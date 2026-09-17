@@ -391,6 +391,20 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
                             idx++;
                         }
                     }
+                    // A mode is no game object either, and its id is new every
+                    // game (Mode() draws a random UUID); so are the Done and
+                    // Cancel entries' short ids. Record its position and text.
+                    if (pending.event != null && pending.event.getModes() != null) {
+                        int idx = 0;
+                        for (Map.Entry<UUID, String> entry : pending.event.getModes().entrySet()) {
+                            if (entry.getKey().equals(uuid)) {
+                                response.put("mode_index", idx);
+                                response.put("name", stripHtml(entry.getValue()));
+                                break;
+                            }
+                            idx++;
+                        }
+                    }
                 }
                 break;
             case "boolean":
