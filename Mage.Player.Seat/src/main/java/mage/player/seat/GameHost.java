@@ -115,6 +115,7 @@ public final class GameHost {
                 player = new ComputerPlayer7(spec.name(), range, spec.skill() > 0 ? spec.skill() : 6);
             } else {
                 SeatPlayer seat = new SeatPlayer(spec.name(), range);
+                seat.setAskWhenAmbiguous(config.offerManaSources());
                 player = seat;
                 Seat s = new Seat(spec.name(), seat, config.offerManaSources());
                 seatsById.put(seat.getId(), s);
@@ -627,8 +628,16 @@ public final class GameHost {
         game.setConcedingPlayer(seat.player.getId());
     }
 
+    /**
+     * A person sits here (the product's one switch for it): mana sources are
+     * offered at priority so they can tap their own, and a payment the clean
+     * sources could make in more than one way is asked, not chosen
+     * ({@link AutoPay}). Off for pilots, which never see a mana prompt.
+     */
     public void setOfferManaSources(String seatName, boolean enabled) {
-        seat(seatName).offerManaSources = enabled;
+        Seat seat = seat(seatName);
+        seat.offerManaSources = enabled;
+        seat.player.setAskWhenAmbiguous(enabled);
     }
 
     public void setAutoPay(String seatName, boolean enabled) {
