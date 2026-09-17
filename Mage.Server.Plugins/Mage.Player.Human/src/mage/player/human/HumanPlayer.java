@@ -93,7 +93,7 @@ public class HumanPlayer extends PlayerImpl {
     // * - CALL thread: on closed response - waiting open status of player's response object (if it's too long then cancel the answer)
     // * - CALL thread: on opened response - save answer to player's response object and notify GAME thread about it by response.notifyAll
     // * - GAME thread: on notify from response - check new answer value and process it (if it bad then repeat and wait the next one);
-    private transient Boolean responseOpenedForAnswer = false; // GAME thread waiting new answer
+    private transient volatile boolean responseOpenedForAnswer = false; // GAME thread waiting new answer
     private transient long responseLastWaitingThreadId = 0;
     private final transient PlayerResponse response; // data receiver from a client side (must be shared for one player between multiple clients)
     private final int RESPONSE_WAITING_TIME_SECS = 30; // waiting time before cancel current response
@@ -250,6 +250,18 @@ public class HumanPlayer extends PlayerImpl {
             }
         }
 
+        long waitedMs = (long) currentTimesWaiting * RESPONSE_WAITING_CHECK_MS;
+        if (waitedMs >= 500 && canRespond()) {
+            logger.info(String.format(
+                    "Delayed waitResponseOpen resolved after %d ms. User: %s; action: %s; game: %s; thread: %s",
+                    waitedMs,
+                    this.getName(),
+                    response.getActiveAction(),
+                    response.getActiveGameInfo(),
+                    Thread.currentThread().getName()
+            ));
+        }
+
         return true; // can use new value
     }
 
@@ -301,7 +313,19 @@ public class HumanPlayer extends PlayerImpl {
             game.getState().setPriorityPlayerId(getId());
         }
 
-        responseOpenedForAnswer = false;
+        if (isExecutingMacro()) {
+            responseOpenedForAnswer = false;
+            return;
+        }
+
+        // Open the response window before firing the callback so an immediate
+        // bridge reply cannot sit in waitResponseOpen() and get stranded until a
+        // later prompt reuses the same response object.
+        synchronized (response) {
+            response.clear();
+            response.setActiveAction(game, DebugUtil.getMethodNameWithSource(1, "method"));
+            responseOpenedForAnswer = true;
+        }
     }
 
     /**
@@ -314,6 +338,7 @@ public class HumanPlayer extends PlayerImpl {
         ;
 
         if (isExecutingMacro()) {
+            responseOpenedForAnswer = false;
             pullResponseFromQueue(game);
 //            logger.info("MACRO pull from queue: " + response.toString());
 //            try {
@@ -324,23 +349,35 @@ public class HumanPlayer extends PlayerImpl {
         }
 
         boolean loop = true;
+        boolean firstWait = true;
+        String activeAction = DebugUtil.getMethodNameWithSource(1, "method");
         while (loop) {
             // start waiting for next answer
-            response.clear();
-            response.setActiveAction(game, DebugUtil.getMethodNameWithSource(1, "method"));
             game.resumeTimer(getTurnControlledBy());
-            responseOpenedForAnswer = true;
 
             loop = false;
             synchronized (response) { // TODO: synchronized response smells bad here, possible deadlocks? Need research
+                if (!firstWait) {
+                    response.clear();
+                    response.setActiveAction(game, activeAction);
+                    responseOpenedForAnswer = true;
+                }
                 try {
-                    response.wait(); // start waiting a response.notifyAll command from CALL thread (client answer)
+                    // The callback may already have been answered before we got
+                    // here; in that case preserve the response instead of
+                    // clearing it and waiting again.
+                    if (!response.hasSyncResponse()
+                            && !response.getAsyncWantConcede()
+                            && !response.getAsyncWantCheat()) {
+                        response.wait(); // start waiting a response.notifyAll command from CALL thread (client answer)
+                    }
                 } catch (InterruptedException ignore) {
                 } finally {
                     responseOpenedForAnswer = false;
                     game.pauseTimer(getTurnControlledBy());
                 }
             }
+            firstWait = false;
 
             // async command: concede by any player
             // game recived immediately response on OTHER player concede -- need to process end game and continue to wait
@@ -2091,6 +2128,29 @@ public class HumanPlayer extends PlayerImpl {
                         .map(p -> p.getId())
                         .collect(Collectors.toList());
                 options.put(Constants.Option.POSSIBLE_BLOCKERS, (Serializable) possibleBlockers);
+                // Pair each blocker with the attackers it may legally block. The engine already
+                // decides this per blocker in selectCombatGroup; publishing it here means a client
+                // can present a legal choice instead of guessing and being rejected. Same
+                // canBlock() predicate, so the two can never disagree.
+                HashMap<UUID, java.util.List<UUID>> blockableAttackers = new HashMap<>();
+                Set<UUID> attackingCreatures = new TargetAttackingCreature().possibleTargets(playerId, null, game);
+                for (UUID blockerId : possibleBlockers) {
+                    Permanent possibleBlocker = game.getPermanent(blockerId);
+                    if (possibleBlocker == null) {
+                        continue;
+                    }
+                    java.util.List<UUID> blockable = new java.util.ArrayList<>();
+                    for (UUID attackerId : attackingCreatures) {
+                        CombatGroup group = game.getCombat().findGroup(attackerId);
+                        if (group != null && group.canBlock(possibleBlocker, game)) {
+                            blockable.add(attackerId);
+                        }
+                    }
+                    if (!blockable.isEmpty()) {
+                        blockableAttackers.put(blockerId, blockable);
+                    }
+                }
+                options.put(Constants.Option.BLOCKABLE_ATTACKERS, blockableAttackers);
                 game.fireSelectEvent(playerId, "Select blockers", options);
             }
             waitForResponse(game);
@@ -2142,6 +2202,26 @@ public class HumanPlayer extends PlayerImpl {
                 CombatGroup group = game.getCombat().findGroup(attackerId);
                 if (group != null && blocker != null && group.canBlock(blocker, game)) {
                     possibleAttackersToBlock.add(attackerId);
+                }
+            }
+            if (possibleAttackersToBlock.isEmpty() && !allAttackers.isEmpty() && blocker != null) {
+                // Debug: log why no attackers are blockable (investigate empty blocker-target choices)
+                logger.warn("selectCombatGroup: 0/" + allAttackers.size() + " attackers blockable by "
+                    + blocker.getIdName() + " (controller=" + blocker.getControllerId() + ")");
+                for (UUID attackerId : allAttackers) {
+                    Permanent attacker = game.getPermanent(attackerId);
+                    CombatGroup group = game.getCombat().findGroup(attackerId);
+                    String attackerName = attacker != null ? attacker.getIdName() : attackerId.toString();
+                    if (group == null) {
+                        logger.warn("  " + attackerName + ": findGroup returned null");
+                    } else {
+                        boolean defenderMatch = group.getDefendingPlayerId().equals(blocker.getControllerId());
+                        boolean canBlock = blocker.canBlock(attackerId, game);
+                        logger.warn("  " + attackerName + ": defender=" + group.getDefendingPlayerId()
+                            + " defenderMatch=" + defenderMatch
+                            + " canBlock=" + canBlock
+                            + " groupCanBlock=" + group.canBlock(blocker, game));
+                    }
                 }
             }
             if (possibleAttackersToBlock.size() == 1) {
