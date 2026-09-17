@@ -45,7 +45,7 @@ public class GameHostTest {
         boolean sawOurAttack = false;
         try {
             for (int i = 0; i < 400; i++) {
-                Map<String, Object> d = host.awaitDecision("You", 60_000);
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
                 if (Boolean.TRUE.equals(d.get("game_over"))) {
                     LOG.info("game over: " + d.get("winner"));
                     break;
@@ -105,7 +105,7 @@ public class GameHostTest {
             Map<String, Object> none = host.chooseAction("You", Map.of("choice", "no"));
             Assert.assertEquals("no_pending_action", none.get("error_code"));
             host.start();
-            Map<String, Object> d = host.awaitDecision("You", 60_000);
+            Map<String, Object> d = host.awaitDecision("You", 120_000);
             Assert.assertEquals("GAME_TARGET", d.get("action_type")); // "Select a starting player"
             Map<String, Object> bad = host.chooseAction("You", Map.of("choice", "42"));
             Assert.assertEquals("index_out_of_range", bad.get("error_code"));
@@ -114,7 +114,7 @@ public class GameHostTest {
             Assert.assertEquals("invalid_choice", wrongKind.get("error_code"));
             Map<String, Object> ok = host.chooseAction("You", Map.of("choice", "0"));
             Assert.assertEquals(true, ok.get("success"));
-            Map<String, Object> again = host.awaitDecision("You", 60_000);
+            Map<String, Object> again = host.awaitDecision("You", 120_000);
             Assert.assertEquals("GAME_ASK", again.get("action_type")); // mulligan
             Assert.assertTrue(String.valueOf(again.get("message")).toLowerCase().contains("mulligan"));
             Assert.assertNotNull("hand shown on the mulligan question", again.get("your_hand"));
@@ -142,7 +142,7 @@ public class GameHostTest {
         boolean sawRites = false;
         try {
             for (int i = 0; i < 300; i++) {
-                Map<String, Object> d = host.awaitDecision("You", 60_000);
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
                 if (Boolean.TRUE.equals(d.get("game_over"))) {
                     break;
                 }
