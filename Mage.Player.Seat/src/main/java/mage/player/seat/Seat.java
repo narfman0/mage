@@ -43,9 +43,18 @@ final class Seat {
         }
     }
 
-    void clearPending() {
+    /**
+     * Forgets {@code answered} once its answer has gone to the engine. Only that
+     * decision: the answer wakes the game thread, which may already have asked
+     * (and delivered) the next question by the time the caller gets here, and
+     * an unconditional clear would drop it — the engine then waits forever for
+     * an answer to a question nobody can see.
+     */
+    void clearPending(Decision answered) {
         synchronized (lock) {
-            pending = null;
+            if (pending == answered) {
+                pending = null;
+            }
         }
     }
 
