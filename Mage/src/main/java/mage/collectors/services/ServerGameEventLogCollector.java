@@ -171,7 +171,6 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
         pending.playerId = queryEvent.getPlayerId();
         pending.message = queryEvent.getMessage();
         pending.event = queryEvent;
-        pending.stateSnapshot = buildStateSnapshot(game, gameSeq);
         gel.setPendingQuery(queryEvent.getPlayerId(), pending);
     }
 
@@ -212,12 +211,7 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
         Map<String, Object> response = buildResponse(game, responseType, data, pending);
         event.put("response", response);
 
-        // State snapshot dedup + write must be atomic — onPlayerResponse can be
-        // called from multiple network threads concurrently (one per player).
-        // Without synchronization the lastStateHash check races and can produce
-        // duplicate "state" entries, causing nondeterministic snapshot counts in
-        // golden test exports.
-        gel.writeEventWithDedup(event, pending.stateSnapshot);
+        gel.writeLine(toJson(event));
     }
 
     @Override
@@ -254,14 +248,6 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
         }
         event.put("winner", winnerName);
         event.put("life_totals", lifeTotals);
-
-        // Final state snapshot — captures life totals after combat damage resolves.
-        // Without this, games ending via lethal damage have no snapshot showing the
-        // final life total (the last decision snapshot is taken before damage).
-        Map<String, Object> finalState = buildStateSnapshot(game, seq);
-        if (finalState != null) {
-            event.put("state", finalState);
-        }
 
         gel.writeLine(toJson(event));
         gel.close();
@@ -425,420 +411,11 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
 
     // --- State snapshot building ---
 
-    /**
-     * Build a type line string from a MageObject, e.g. "Legendary Creature - Bear Warrior".
-     */
-    private static String buildTypeLine(MageObject obj, Game game) {
-        StringBuilder sb = new StringBuilder();
-        for (SuperType st : obj.getSuperType(game)) {
-            if (sb.length() > 0) sb.append(' ');
-            sb.append(st.toString());
-        }
-        for (CardType ct : obj.getCardType(game)) {
-            if (sb.length() > 0) sb.append(' ');
-            sb.append(ct.toString());
-        }
-        List<SubType> subtypes = new ArrayList<>();
-        for (SubType sub : obj.getSubtype(game)) {
-            subtypes.add(sub);
-        }
-        if (!subtypes.isEmpty()) {
-            sb.append(" — ");
-            for (int i = 0; i < subtypes.size(); i++) {
-                if (i > 0) sb.append(' ');
-                sb.append(subtypes.get(i).toString());
-            }
-        }
-        return sb.toString();
-    }
 
-    /**
-     * Serialize counters map, returning null if empty.
-     * Example: {"p1p1": 2, "loyalty": 3}
-     */
-    private static Map<String, Object> serializeCounters(Counters counters) {
-        if (counters == null || counters.isEmpty()) {
-            return null;
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        List<String> names = new ArrayList<>(counters.keySet());
-        Collections.sort(names);
-        for (String name : names) {
-            Counter c = counters.get(name);
-            if (c.getCount() > 0) {
-                result.put(name, c.getCount());
-            }
-        }
-        return result.isEmpty() ? null : result;
-    }
 
-    /**
-     * Check whether a card has been modified from its oracle (printed) version.
-     * Copies, tokens, and cards with in-game modifications to type, P/T, or rules are "modified".
-     */
-    private static boolean isCardModified(Card card, Game game) {
-        if (card.isCopy()) return true;
-        if (!Objects.equals(card.getRules(), card.getRules(game))) return true;
-        if (!Objects.equals(card.getCardType(), card.getCardType(game))) return true;
-        if (!Objects.equals(card.getSubtype(), card.getSubtype(game))) return true;
-        if (!Objects.equals(card.getSuperType(), card.getSuperType(game))) return true;
-        if (card.getPower().getValue() != card.getPower().getBaseValue()) return true;
-        if (card.getToughness().getValue() != card.getToughness().getBaseValue()) return true;
-        return false;
-    }
 
-    /**
-     * Serialize a Card for hand/graveyard/exile zones.
-     * Unmodified cards emit compact {id, name}; modified cards include full properties.
-     */
-    private static Map<String, Object> serializeCard(Card card, Game game, ShortIdRegistry registry) {
-        Map<String, Object> ci = new LinkedHashMap<>();
-        ci.put("id", registry.getOrAssign(card.getId()));
-        ci.put("name", card.getName());
 
-        if (isCardModified(card, game)) {
-            if (card.getManaCost() != null) {
-                ci.put("mana_cost", card.getManaCost().getText());
-            }
-            ci.put("type_line", buildTypeLine(card, game));
-            if (card.isCreature(game)) {
-                ci.put("power", card.getPower().getValue());
-                ci.put("toughness", card.getToughness().getValue());
-            }
-            List<String> rules = card.getRules(game);
-            if (rules != null && !rules.isEmpty()) {
-                ci.put("rules", new ArrayList<>(rules));
-            }
-        }
 
-        return ci;
-    }
-
-    /**
-     * Serialize a Permanent for the battlefield zone.
-     * Oracle-derivable properties (type_line, mana_cost, rules) are only emitted
-     * when the permanent is modified from its printed card. Battlefield-specific
-     * state (tapped, summoning_sick, P/T, counters, etc.) is always emitted.
-     */
-    private static Map<String, Object> serializePermanent(Permanent perm, Game game, ShortIdRegistry registry) {
-        Map<String, Object> pi = new LinkedHashMap<>();
-        pi.put("id", registry.getOrAssign(perm.getId()));
-        pi.put("name", perm.getName());
-        pi.put("tapped", perm.isTapped());
-
-        // P/T for creatures
-        if (perm.isCreature(game)) {
-            pi.put("power", perm.getPower().getValue());
-            pi.put("toughness", perm.getToughness().getValue());
-        }
-        // Loyalty for planeswalkers
-        if (perm.isPlaneswalker(game)) {
-            Counters counters = perm.getCounters(game);
-            if (counters != null && counters.containsKey("loyalty")) {
-                pi.put("loyalty", counters.getCount("loyalty"));
-            }
-        }
-
-        boolean isToken = perm instanceof PermanentToken;
-        pi.put("token", isToken);
-        boolean faceDown = perm.isFaceDown(game);
-        pi.put("face_down", faceDown);
-        pi.put("summoning_sick", perm.hasSummoningSickness());
-        if (perm.isTransformed()) {
-            pi.put("back_face", true);
-        }
-
-        // Oracle-derivable properties: only emit when modified from printed card.
-        // Tokens are always "modified" (no oracle card to reference).
-        boolean modified = isToken || isCardModified(perm, game);
-        if (modified) {
-            pi.put("type_line", buildTypeLine(perm, game));
-            if (perm.getManaCost() != null) {
-                pi.put("mana_cost", perm.getManaCost().getText());
-            }
-            List<String> rules = perm.getRules(game);
-            if (rules != null && !rules.isEmpty()) {
-                pi.put("rules", new ArrayList<>(rules));
-            }
-        }
-
-        // Counters (exclude loyalty — already shown as top-level field)
-        Counters counters = perm.getCounters(game);
-        if (counters != null && !counters.isEmpty()) {
-            Map<String, Object> counterMap = new LinkedHashMap<>();
-            List<String> names = new ArrayList<>(counters.keySet());
-            Collections.sort(names);
-            for (String name : names) {
-                if (name.equals("loyalty")) continue;
-                Counter c = counters.get(name);
-                if (c.getCount() > 0) {
-                    counterMap.put(name, c.getCount());
-                }
-            }
-            if (!counterMap.isEmpty()) {
-                pi.put("counters", counterMap);
-            }
-        }
-
-        // Attached to
-        if (perm.getAttachedTo() != null) {
-            MageObject attachedObj = game.getObject(perm.getAttachedTo());
-            if (attachedObj != null) {
-                pi.put("attached_to", registry.getOrAssign(perm.getAttachedTo()));
-            }
-        }
-
-        // Visibility annotation for face-down permanents
-        if (faceDown) {
-            Player controller = game.getPlayer(perm.getControllerId());
-            if (controller != null) {
-                List<String> visibleTo = new ArrayList<>();
-                visibleTo.add(controller.getName());
-                pi.put("visible_to", visibleTo);
-            }
-        }
-
-        return pi;
-    }
-
-    private Map<String, Object> buildStateSnapshot(Game game, int gameSeq) {
-        GameState state = game.getState();
-        if (state == null) {
-            return null;
-        }
-        ShortIdRegistry registry = game.getShortIdRegistry();
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-
-        snapshot.put("turn", state.getTurnNum());
-        TurnPhase phase = state.getTurnPhaseType();
-        snapshot.put("phase", phase != null ? phase.name() : null);
-        PhaseStep step = state.getTurnStepType();
-        snapshot.put("step", step != null ? step.name() : null);
-
-        Player activePlayer = state.getActivePlayerId() != null ? game.getPlayer(state.getActivePlayerId()) : null;
-        snapshot.put("active_player", activePlayer != null ? activePlayer.getName() : null);
-        Player priorityPlayer = state.getPriorityPlayerId() != null ? game.getPlayer(state.getPriorityPlayerId()) : null;
-        snapshot.put("priority_player", priorityPlayer != null ? priorityPlayer.getName() : null);
-
-        // Players
-        List<Map<String, Object>> players = new ArrayList<>();
-        // Sort by name for deterministic output
-        List<Player> sortedPlayers = new ArrayList<>(state.getPlayers().values());
-        sortedPlayers.sort(Comparator.comparing(Player::getName));
-
-        for (Player player : sortedPlayers) {
-            Map<String, Object> p = new LinkedHashMap<>();
-            p.put("name", player.getName());
-            p.put("life", player.getLife());
-            p.put("library_size", player.getLibrary().size());
-
-            // Mana pool
-            ManaPool pool = player.getManaPool();
-            Map<String, Object> manaMap = new LinkedHashMap<>();
-            if (pool.getWhite() > 0) manaMap.put("W", pool.getWhite());
-            if (pool.getBlue() > 0) manaMap.put("U", pool.getBlue());
-            if (pool.getBlack() > 0) manaMap.put("B", pool.getBlack());
-            if (pool.getRed() > 0) manaMap.put("R", pool.getRed());
-            if (pool.getGreen() > 0) manaMap.put("G", pool.getGreen());
-            if (pool.getColorless() > 0) manaMap.put("C", pool.getColorless());
-            if (!manaMap.isEmpty()) {
-                p.put("mana_pool", manaMap);
-            }
-
-            // Player counters
-            Counters playerCounters = player.getCountersAsCopy();
-            Map<String, Object> pcMap = serializeCounters(playerCounters);
-            if (pcMap != null) {
-                p.put("counters", pcMap);
-            }
-
-            // Designations
-            if (player.hasDesignation(DesignationType.THE_MONARCH)) {
-                p.put("monarch", true);
-            }
-            if (player.hasDesignation(DesignationType.THE_INITIATIVE)) {
-                p.put("initiative", true);
-            }
-            if (player.hasDesignation(DesignationType.CITYS_BLESSING)) {
-                p.put("citys_blessing", true);
-            }
-
-            // Command zone
-            Set<UUID> commanderIds = player.getCommandersIds();
-            if (commanderIds != null && !commanderIds.isEmpty()) {
-                List<Map<String, Object>> cmdZone = new ArrayList<>();
-                for (UUID cmdId : commanderIds) {
-                    MageObject cmdObj = game.getObject(cmdId);
-                    if (cmdObj != null) {
-                        Map<String, Object> cmdCard = new LinkedHashMap<>();
-                        cmdCard.put("id", registry.getOrAssign(cmdId));
-                        cmdCard.put("name", cmdObj.getName());
-                        cmdZone.add(cmdCard);
-                    }
-                }
-                if (!cmdZone.isEmpty()) {
-                    cmdZone.sort(Comparator.<Map<String, Object>, String>comparing(m -> (String) m.get("name"))
-                            .thenComparingInt(m -> ShortIdRegistry.parseSequence((String) m.get("id"))));
-                    p.put("command_zone", cmdZone);
-                }
-            }
-
-            // Hand — server has full visibility, annotated with visible_to
-            // Pre-sort by name for deterministic ID assignment of unique-name cards,
-            // then post-sort by (name, shortId) for same-name card ordering.
-            // See ShortIdRegistry for the deterministic ordering invariant.
-            List<Map<String, Object>> hand = new ArrayList<>();
-            List<Card> handCards = new ArrayList<>(player.getHand().getCards(game));
-            handCards.sort(Comparator.comparing(Card::getName));
-            for (Card card : handCards) {
-                Map<String, Object> ci = serializeCard(card, game, registry);
-                // Hand cards are only visible to their owner
-                List<String> visibleTo = new ArrayList<>();
-                visibleTo.add(player.getName());
-                ci.put("visible_to", visibleTo);
-                hand.add(ci);
-            }
-            hand.sort(Comparator.<Map<String, Object>, String>comparing(m -> (String) m.get("name"))
-                    .thenComparingInt(m -> ShortIdRegistry.parseSequence((String) m.get("id"))));
-            p.put("hand", hand);
-
-            // Battlefield — pre-sort by name, post-sort by (name, shortId)
-            List<Map<String, Object>> battlefield = new ArrayList<>();
-            List<Permanent> perms = new ArrayList<>();
-            for (Permanent perm : game.getBattlefield().getAllActivePermanents(player.getId())) {
-                perms.add(perm);
-            }
-            perms.sort(Comparator.comparing(Permanent::getName));
-            for (Permanent perm : perms) {
-                battlefield.add(serializePermanent(perm, game, registry));
-            }
-            battlefield.sort(Comparator.<Map<String, Object>, String>comparing(m -> (String) m.get("name"))
-                    .thenComparingInt(m -> ShortIdRegistry.parseSequence((String) m.get("id"))));
-            p.put("battlefield", battlefield);
-
-            // Graveyard — pre-sort by name, post-sort by (name, shortId)
-            List<Map<String, Object>> graveyard = new ArrayList<>();
-            List<Card> gyCards = new ArrayList<>(player.getGraveyard().getCards(game));
-            gyCards.sort(Comparator.comparing(Card::getName));
-            for (Card card : gyCards) {
-                graveyard.add(serializeCard(card, game, registry));
-            }
-            graveyard.sort(Comparator.<Map<String, Object>, String>comparing(m -> (String) m.get("name"))
-                    .thenComparingInt(m -> ShortIdRegistry.parseSequence((String) m.get("id"))));
-            p.put("graveyard", graveyard);
-
-            // Exile
-            List<Map<String, Object>> exile = new ArrayList<>();
-            for (Card card : game.getExile().getCardsOwned(game, player.getId())) {
-                exile.add(serializeCard(card, game, registry));
-            }
-            exile.sort(Comparator.<Map<String, Object>, String>comparing(m -> (String) m.get("name"))
-                    .thenComparingInt(m -> ShortIdRegistry.parseSequence((String) m.get("id"))));
-            p.put("exile", exile);
-
-            players.add(p);
-        }
-        snapshot.put("players", players);
-
-        // Stack
-        List<Map<String, Object>> stack = new ArrayList<>();
-        for (StackObject so : state.getStack()) {
-            Map<String, Object> si = new LinkedHashMap<>();
-            si.put("id", registry.getOrAssign(so.getId()));
-            si.put("name", so.getName());
-            if (so instanceof StackAbility) {
-                UUID sourceId = ((StackAbility) so).getSourceId();
-                if (sourceId != null) {
-                    Card sourceCard = game.getCard(sourceId);
-                    if (sourceCard != null) {
-                        si.put("source_card", sourceCard.getName());
-                    } else {
-                        MageObject sourceObj = game.getObject(sourceId);
-                        if (sourceObj != null) {
-                            si.put("source_card", sourceObj.getName());
-                        }
-                    }
-                }
-            }
-            Player controller = game.getPlayer(so.getControllerId());
-            si.put("controller", controller != null ? controller.getName() : null);
-            if (so.getManaCost() != null) {
-                si.put("mana_cost", so.getManaCost().getText());
-            }
-            // Targets
-            if (so.getStackAbility() != null && so.getStackAbility().getTargets() != null) {
-                List<Map<String, Object>> targetsList = new ArrayList<>();
-                for (Target target : so.getStackAbility().getTargets()) {
-                    for (UUID targetId : target.getTargets()) {
-                        Map<String, Object> t = new LinkedHashMap<>();
-                        t.put("id", registry.getOrAssign(targetId));
-                        MageObject targetObj = game.getObject(targetId);
-                        if (targetObj != null) {
-                            t.put("name", targetObj.getName());
-                        } else {
-                            // Could be a player
-                            Player targetPlayer = game.getPlayer(targetId);
-                            if (targetPlayer != null) {
-                                t.put("name", targetPlayer.getName());
-                            }
-                        }
-                        targetsList.add(t);
-                    }
-                }
-                if (!targetsList.isEmpty()) {
-                    si.put("targets", targetsList);
-                }
-            }
-            stack.add(si);
-        }
-        snapshot.put("stack", stack);
-
-        // Combat
-        if (state.getCombat() != null && !state.getCombat().getGroups().isEmpty()) {
-            List<Map<String, Object>> combat = new ArrayList<>();
-            for (CombatGroup group : state.getCombat().getGroups()) {
-                Map<String, Object> g = new LinkedHashMap<>();
-                List<Map<String, Object>> attackersList = new ArrayList<>();
-                for (UUID aid : group.getAttackers()) {
-                    Map<String, Object> a = new LinkedHashMap<>();
-                    Permanent attacker = game.getPermanent(aid);
-                    a.put("id", registry.getOrAssign(aid));
-                    a.put("name", attacker != null ? attacker.getName() : "Unknown");
-                    if (attacker != null) {
-                        a.put("power", attacker.getPower().getValue());
-                        a.put("toughness", attacker.getToughness().getValue());
-                    }
-                    attackersList.add(a);
-                }
-                g.put("attackers", attackersList);
-                List<Map<String, Object>> blockersList = new ArrayList<>();
-                for (UUID bid : group.getBlockers()) {
-                    Map<String, Object> b = new LinkedHashMap<>();
-                    Permanent blocker = game.getPermanent(bid);
-                    b.put("id", registry.getOrAssign(bid));
-                    b.put("name", blocker != null ? blocker.getName() : "Unknown");
-                    if (blocker != null) {
-                        b.put("power", blocker.getPower().getValue());
-                        b.put("toughness", blocker.getToughness().getValue());
-                    }
-                    blockersList.add(b);
-                }
-                g.put("blockers", blockersList);
-                // Defender
-                UUID defenderId = group.getDefenderId();
-                if (defenderId != null) {
-                    Player defender = game.getPlayer(defenderId);
-                    if (defender != null) {
-                        g.put("defender", defender.getName());
-                    }
-                }
-                combat.add(g);
-            }
-            snapshot.put("combat", combat);
-        }
-
-        return snapshot;
-    }
 
     // --- JSON serialization (simple, no dependency) ---
 
@@ -925,7 +502,6 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
     private static class GameEventLogger {
         private final Path filePath;
         private BufferedWriter writer;
-        private String lastStateHash;
         // Pending queries per player (game thread writes, network thread reads)
         private final Map<UUID, PendingQuery> pendingQueries = new ConcurrentHashMap<>();
         // Phase tracking for phase_change events
@@ -956,31 +532,6 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
             }
         }
 
-        /**
-         * Dedup state snapshot against previous hash and write event atomically.
-         * Must be synchronized because onPlayerResponse runs on per-player
-         * network threads that can race on lastStateHash.
-         */
-        synchronized void writeEventWithDedup(Map<String, Object> event,
-                                              Map<String, Object> stateSnapshot) {
-            if (stateSnapshot != null) {
-                String hash = String.valueOf(stateSnapshot.hashCode());
-                if (!hash.equals(lastStateHash)) {
-                    event.put("state", stateSnapshot);
-                    lastStateHash = hash;
-                } else {
-                    event.put("state_hash", hash);
-                }
-            }
-            if (writer == null) return;
-            try {
-                writer.write(toJson(event));
-                writer.newLine();
-                writer.flush();
-            } catch (IOException e) {
-                logger.error("Failed to write to server game event log: " + filePath, e);
-            }
-        }
 
         void setPendingQuery(UUID playerId, PendingQuery query) {
             pendingQueries.put(playerId, query);
@@ -1010,6 +561,5 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
         UUID playerId;
         String message;
         PlayerQueryEvent event;
-        Map<String, Object> stateSnapshot;
     }
 }

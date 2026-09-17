@@ -15,10 +15,6 @@ public final class CardScanner {
 
     public static boolean scanned = false;
 
-    // True while scan() is running its batch loop. CardRepository checks this
-    // to avoid triggering per-card lazy loads during the bulk scan.
-    static boolean scanning = false;
-
     private static final Logger logger = Logger.getLogger(CardScanner.class);
 
     public static void scan() {
@@ -30,7 +26,6 @@ public final class CardScanner {
             return;
         }
         scanned = true;
-        scanning = true;
 
         List<CardInfo> cardsToAdd = new ArrayList<>();
         List<ExpansionInfo> setsToAdd = new ArrayList<>();
@@ -85,7 +80,6 @@ public final class CardScanner {
             }
         }
         CardRepository.instance.saveCards(cardsToAdd, CardRepository.instance.getContentVersionConstant());
-        scanning = false;
     }
 
     public static List<Card> getAllCards() {
