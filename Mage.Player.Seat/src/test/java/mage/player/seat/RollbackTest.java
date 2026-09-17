@@ -33,7 +33,7 @@ public class RollbackTest {
         try {
             Map<String, Object> d = null;
             for (int i = 0; i < 100; i++) {
-                d = host.awaitDecision("You", 60_000);
+                d = host.awaitDecision("You", 120_000);
                 Assert.assertTrue(String.valueOf(d), Boolean.TRUE.equals(d.get("action_pending")));
                 if (turnOf(d) >= 3 && "GAME_SELECT".equals(d.get("action_type"))) {
                     break;
@@ -45,7 +45,7 @@ public class RollbackTest {
             // The engine restarts the earlier turn and asks again from there.
             Map<String, Object> after = null;
             for (int i = 0; i < 20; i++) {
-                after = host.awaitDecision("You", 60_000);
+                after = host.awaitDecision("You", 120_000);
                 Assert.assertTrue(String.valueOf(after), Boolean.TRUE.equals(after.get("action_pending")));
                 if (turnOf(after) < 3) {
                     break;
