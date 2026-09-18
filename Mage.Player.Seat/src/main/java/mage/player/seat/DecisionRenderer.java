@@ -29,6 +29,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -353,7 +354,16 @@ public final class DecisionRenderer {
         if (e.getCards() != null) {
             offered = new CardsView(game, e.getCards().getCards(game), me);
             if (targets == null || targets.isEmpty()) {
-                targets = new HashSet<>(e.getCards());
+                // A card search (library/hand/graveyard) fires with the whole
+                // zone as e.getCards() so the player sees it all, but
+                // HumanPlayer.choose/chooseTarget(Cards, TargetCard, ...) only
+                // ever hands the legal subset back as options["possibleTargets"]
+                // (it never populates e.getTargets() for this query shape) — so
+                // without this, every card in the zone looked equally legal
+                // (report 7b2f2ef77e: Worldly Tutor offering lands alongside
+                // creatures). Falls back to the whole zone when the option
+                // isn't there, for callers of this query shape that never set it.
+                targets = possibleTargets(e).orElseGet(() -> new HashSet<>(e.getCards()));
             }
         } else if (e.getPerms() != null) {
             List<CardView> perms = new ArrayList<>();
@@ -368,6 +378,15 @@ public final class DecisionRenderer {
             }
         }
         return targetChoices(r, targets, offered, view, me, e.isRequired());
+    }
+
+    /** The legal subset of a card search's zone, when HumanPlayer computed one
+     *  (options["possibleTargets"], set only when non-empty). */
+    @SuppressWarnings("unchecked")
+    private Optional<Set<UUID>> possibleTargets(PlayerQueryEvent e) {
+        Map<String, Serializable> options = e.getOptions();
+        Object raw = options != null ? options.get("possibleTargets") : null;
+        return raw instanceof Set ? Optional.of((Set<UUID>) raw) : Optional.empty();
     }
 
     private List<Object> pickAbility(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, UUID me) {
