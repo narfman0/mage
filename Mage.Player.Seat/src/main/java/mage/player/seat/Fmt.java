@@ -1,7 +1,9 @@
 package mage.player.seat;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -62,6 +64,78 @@ public final class Fmt {
             out.add(rules(s));
         }
         return out;
+    }
+
+    /** The engine's marker between a card's rules and its hints (HintUtils.HINT_START_MARK). */
+    private static final String HINT_START = "<hintstart/>";
+    private static final Pattern FONT_TAG = Pattern.compile("(?i)</?font[^>]*>");
+    private static final Pattern BR = Pattern.compile("(?i)<br\\s*/?>");
+    private static final String[][] HINT_KINDS = {
+        {"ICON_RESTRICT", "restrict"}, {"ICON_REQUIRE", "require"}, {"ICON_GOOD", "good"}, {"ICON_BAD", "bad"},
+        {"ICON_DUNGEON_ROOM_CURRENT", "room_current"}, {"ICON_DUNGEON_ROOM_NEXT", "room_next"},
+    };
+
+    /** A card's rules split from its hints. */
+    public record Split(List<String> rules, List<Map<String, Object>> hints) {
+    }
+
+    /**
+     * The engine appends dynamic hints to a card's rules in a started game
+     * (CardUtil.getCardRulesWithAdditionalInfo, PermanentImpl.getRules):
+     * after a {@code <br/><hintstart/>} line come "Cards in your graveyard:
+     * 3", "Can't attack (Pacifism)", "Goaded by …", some wrapped in a
+     * {@code <font color=…>} and prefixed with an icon name
+     * ({@code ICON_RESTRICT}, {@code ICON_GOOD}…), several joined by
+     * {@code <br>}. Its Swing client renders them under the card in a
+     * smaller font; passed through as rules they reached the board as
+     * literal text (the engine-UI sweep, fullpod docs/engine-ui-surface.md,
+     * 2026-09-18). Here the rules keep the printed markup ({@link #rules})
+     * and each hint is one line of plain text with a {@code kind} from its
+     * icon — the closest thing the engine has to saying why a card does or
+     * doesn't do something.
+     */
+    public static Split splitRules(List<String> list) {
+        if (list == null) {
+            return new Split(null, List.of());
+        }
+        List<String> rules = new ArrayList<>();
+        List<Map<String, Object>> hints = new ArrayList<>();
+        boolean inHints = false;
+        for (String s : list) {
+            if (s == null) {
+                continue;
+            }
+            if (s.contains(HINT_START)) {
+                inHints = true;
+                continue;
+            }
+            if (!inHints) {
+                rules.add(rules(s));
+                continue;
+            }
+            for (String line : BR.split(s)) {
+                String text = FONT_TAG.matcher(line).replaceAll("");
+                String kind = null;
+                for (String[] k : HINT_KINDS) {
+                    if (text.startsWith(k[0])) {
+                        kind = k[1];
+                        text = text.substring(k[0].length());
+                        break;
+                    }
+                }
+                text = stripHtml(text).trim();
+                if (text.isEmpty()) {
+                    continue;
+                }
+                Map<String, Object> hint = new LinkedHashMap<>();
+                hint.put("text", text);
+                if (kind != null) {
+                    hint.put("kind", kind);
+                }
+                hints.add(hint);
+            }
+        }
+        return new Split(rules, hints);
     }
 
     /** "1. Add {G}" -> "Add {G}" for the Nth entry of an ability picker. */
