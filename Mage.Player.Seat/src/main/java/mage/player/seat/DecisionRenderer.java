@@ -165,6 +165,7 @@ public final class DecisionRenderer {
                 r.put("no_text", Fmt.stripHtml(no.toString()));
             }
         }
+        source(r, e);
         String msg = e.getMessage();
         if (msg != null && msg.toLowerCase().contains("mulligan") && view.getMyHand() != null && !view.getMyHand().isEmpty()) {
             List<CardView> hand = new ArrayList<>(view.getMyHand().values());
@@ -435,7 +436,40 @@ public final class DecisionRenderer {
         }
         List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired());
         chosenSoFar(r, e);
+        source(r, e);
         return backing;
+    }
+
+    private static final Pattern LOG_REF = Pattern.compile("\\[([0-9a-f]{3})\\]");
+
+    /**
+     * Which card is asking. HumanPlayer sends an ask or target prompt as a
+     * MessageToClient whose second line is the source's log name ("Lightning
+     * Bolt [a3f]"; options["secondMessage"] via GameImpl.addMessageToOptions)
+     * — the Swing client's smaller line under the question. The target
+     * message itself never names its source ("Select a creature to destroy"),
+     * so with two triggers on the stack nothing said which one was asking
+     * (the engine-UI sweep, fullpod docs/engine-ui-surface.md, 2026-09-18).
+     * {@code source: {name, id?}} — the id resolved from the log ref, so the
+     * board can open the live card and glow its stack item.
+     */
+    private void source(Map<String, Object> r, PlayerQueryEvent e) {
+        Map<String, Serializable> options = e.getOptions();
+        Object raw = options != null ? options.get("secondMessage") : null;
+        if (raw == null) {
+            return;
+        }
+        String text = raw.toString();
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("name", Fmt.stripHtml(text));
+        java.util.regex.Matcher m = LOG_REF.matcher(text);
+        if (m.find()) {
+            UUID id = views.byLogRef(m.group(1));
+            if (id != null) {
+                source.put("id", views.shortId(id));
+            }
+        }
+        r.put("source", source);
     }
 
     /**
