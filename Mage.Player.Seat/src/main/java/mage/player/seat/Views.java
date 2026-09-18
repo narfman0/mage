@@ -374,6 +374,29 @@ public final class Views {
             info.put("is_active", player.isActive());
             boolean isMe = player.getPlayerId().equals(myPlayerId);
             info.put("is_you", isMe);
+            // The table state a seat tile shows next to life (the engine-UI
+            // sweep, fullpod docs/engine-ui-surface.md, 2026-09-18): the
+            // monarch and the initiative change hands on combat damage;
+            // designations (the city's blessing) are permanent; the land-drop
+            // count against its allowance (Azusa: 1 of 3); a seat that has lost
+            // or left keeps a tile that says so.
+            if (player.isMonarch()) {
+                info.put("monarch", true);
+            }
+            if (player.isInitiative()) {
+                info.put("initiative", true);
+            }
+            if (player.getDesignationNames() != null && !player.getDesignationNames().isEmpty()) {
+                info.put("designations", new ArrayList<>(player.getDesignationNames()));
+            }
+            Map<String, Integer> drops = new LinkedHashMap<>();
+            drops.put("used", player.getLandsPlayed());
+            drops.put("per_turn", player.getLandsPerTurn());
+            info.put("land_drops", drops);
+            Player gp = game != null ? game.getPlayer(player.getPlayerId()) : null;
+            if (player.hasLeft() || (gp != null && gp.hasLost())) {
+                info.put("out", true);
+            }
             if (isMe && gameView.getMyHand() != null) {
                 List<Map<String, Object>> hand = new ArrayList<>();
                 var playable = gameView.getCanPlayObjects();

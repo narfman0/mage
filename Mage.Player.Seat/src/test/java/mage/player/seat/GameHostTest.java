@@ -63,6 +63,15 @@ public class GameHostTest {
                 maxTurn = Math.max(maxTurn, turn);
                 Map<String, Object> board = board(d);
                 Assert.assertTrue("our seat first on the board", Boolean.TRUE.equals(board.get("is_you")));
+                // The seat tile's table state: land drops against the allowance on every
+                // seat, always; nobody is the monarch, out, or designated in a bears duel.
+                @SuppressWarnings("unchecked")
+                Map<String, Object> drops = (Map<String, Object>) board.get("land_drops");
+                Assert.assertEquals("one land a turn: " + board, 1, drops.get("per_turn"));
+                Assert.assertTrue(String.valueOf(drops.get("used")).matches("[01]"));
+                Assert.assertNull(board.get("monarch"));
+                Assert.assertNull(board.get("out"));
+                Assert.assertNull(board.get("designations"));
                 if (battlefieldHas(board, "Grizzly Bears")) {
                     sawOurCreature = true;
                 }
@@ -120,6 +129,12 @@ public class GameHostTest {
             Assert.assertNotNull("hand shown on the mulligan question", again.get("your_hand"));
             Map<String, Object> state = host.state("You");
             Assert.assertNotNull(state.get("board"));
+            // A seat that concedes is `out` on the board it still sees.
+            host.concede("You");
+            for (int i = 0; i < 50 && !host.isOver(); i++) {
+                Thread.sleep(100);
+            }
+            Assert.assertEquals(Boolean.TRUE, board(host.state("You")).get("out"));
         } finally {
             host.end();
         }
