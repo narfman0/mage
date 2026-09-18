@@ -349,6 +349,115 @@ public class AutoPayGameTest {
     }
 
     /**
+     * Like {@link #floatThenCast}, but continues past the first mana
+     * prompt: {@code picks} answers each one in order by name (a pool
+     * button or a tap-source), same as {@link #play}'s multi-step picks,
+     * so a scenario can float more than gets spent and check what happens
+     * to the rest of the cost.
+     */
+    private Outcome floatThenPlay(String spell, List<String> floatFirst, List<String> picks, String... battlefield) throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("autopay-pool-rest", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), true));
+        Game game = host.game();
+        Player you = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("You".equals(p.getName())) {
+                you = p;
+            }
+        }
+        Assert.assertNotNull(you);
+        List<PutToBattlefieldInfo> perms = new ArrayList<>();
+        for (String name : battlefield) {
+            perms.add(new PutToBattlefieldInfo(card(name), false));
+        }
+        List<Card> library = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            library.add(card("Colossal Dreadmaw"));
+        }
+        game.cheat(you.getId(), library, List.of(card(spell)), perms, List.of(), List.of(), List.of());
+        List<String> toFloat = new ArrayList<>(floatFirst);
+        int manaPrompts = 0;
+        boolean cast = false;
+        Set<String> tapped = new HashSet<>();
+        Set<String> untapped = new HashSet<>();
+        int life = -1;
+        List<String> log = new ArrayList<>();
+        List<String> prompts = new ArrayList<>();
+        host.start();
+        try {
+            for (int i = 0; i < 60; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                Assert.assertNull("render error", d.get("error"));
+                String type = String.valueOf(d.get("action_type"));
+                String message = String.valueOf(d.get("message"));
+                log.add(d.get("context") + " " + type + " " + message);
+                if (cast) {
+                    // The decision after the cast: the mana prompt (the choice is the
+                    // player's), or the next priority with the payment made.
+                    if ("GAME_PLAY_MANA".equals(type) || "GAME_PLAY_XMANA".equals(type)) {
+                        List<String> offered = new ArrayList<>();
+                        for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                            offered.add(c.get("name") + "#" + c.get("id"));
+                        }
+                        prompts.add(message + " | " + String.join(", ", offered));
+                        String pick = manaPrompts < picks.size() ? picks.get(manaPrompts) : null;
+                        manaPrompts++;
+                        String idx = null;
+                        for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                            if (pick != null && pick.equals(c.get("name"))) {
+                                idx = String.valueOf(c.get("index"));
+                                break;
+                            }
+                        }
+                        Map<String, Object> answered = host.chooseAction("You", Map.of("choice", idx != null ? idx : "no"));
+                        Assert.assertTrue("answer rejected: " + answered + " for " + d, Boolean.TRUE.equals(answered.get("success")));
+                        continue;
+                    }
+                    Map<String, Object> board = GameHostTest.board(d);
+                    for (Object o : (List<?>) board.get("battlefield")) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> perm = (Map<String, Object>) o;
+                        (Boolean.TRUE.equals(perm.get("tapped")) ? tapped : untapped).add(String.valueOf(perm.get("name")));
+                    }
+                    life = ((Number) board.get("life")).intValue();
+                    break;
+                }
+                boolean priority = "GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null;
+                Map<String, Object> args = null;
+                if (priority && !toFloat.isEmpty()) {
+                    String want = toFloat.get(0);
+                    for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                        if ("mana".equals(c.get("action")) && want.equals(c.get("name"))) {
+                            args = Map.of("choice", String.valueOf(c.get("index")));
+                            toFloat.remove(0);
+                            break;
+                        }
+                    }
+                }
+                String castIdx = args == null && priority && toFloat.isEmpty() ? castIndex(d, spell) : null;
+                if (args == null && castIdx != null) {
+                    cast = true;
+                    args = Map.of("choice", castIdx);
+                } else if (args == null && "GAME_TARGET".equals(type) && message.contains("starting player")) {
+                    args = Map.of("choice", indexOfYou(d));
+                } else if (args == null) {
+                    args = Map.of("choice", "no");
+                }
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+        } finally {
+            host.end();
+        }
+        Outcome out = new Outcome(manaPrompts, cast, tapped, untapped, life, log, prompts);
+        LOG.info(spell + " floating " + floatFirst + " with " + List.of(battlefield) + " -> " + out);
+        return out;
+    }
+
+    /**
      * Owe a cost with both a coloured pip and a generic one: every floating
      * colour should be offered back, not only the one an explicit pip in
      * what's left happens to name. Report a9bddc7747 (2026-09-17): {G} and
@@ -370,5 +479,23 @@ public class AutoPayGameTest {
         Prompt p = floatThenCast("Spectral Procession", List.of("Mountain"), "Mountain", "Plains", "Plains", "Plains");
         Assert.assertTrue("owed {2/W}s: " + p, p.message().startsWith("Pay {2/W}"));
         Assert.assertTrue("the floating red is offered: " + p, p.offered().contains("Red"));
+    }
+
+    /**
+     * More floats than gets spent, plus a clean land that could alone cover
+     * what's left: the leftover float must still get offered before AutoPay
+     * taps that land for you. Report ed184e0607 (2026-09-18): {G} and {B}
+     * floated (Forest, Swamp tapped for mana), only the {G} pool button was
+     * spent on a {1}{G} cost, and the {1} left over was silently paid by
+     * tapping an untapped Island — the still-floating {B} was never offered
+     * again, and AutoPay's plan never looks at the pool at all.
+     */
+    @Test(timeout = 240_000)
+    public void leftoverFloatIsOfferedBeforeTheRestIsTappedForYou() throws Exception {
+        Outcome o = floatThenPlay("Grizzly Bears", List.of("Forest", "Swamp"), List.of("Green", "Black"), "Forest", "Swamp", "Island");
+        Assert.assertTrue("cast: " + o, o.cast());
+        Assert.assertEquals("two mana prompts: the {G} pip, then the {1} the float could still pay: " + o.prompts(), 2, o.manaPrompts());
+        Assert.assertTrue("Island stays untapped, paid from the float instead: " + o, o.untapped().contains("Island"));
+        Assert.assertFalse("Island was not tapped for you: " + o, o.tapped().contains("Island"));
     }
 }

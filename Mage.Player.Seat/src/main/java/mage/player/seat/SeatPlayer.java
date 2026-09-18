@@ -31,6 +31,7 @@ import mage.player.human.HumanPlayer;
 import mage.players.net.UserData;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import org.apache.log4j.Logger;
@@ -96,7 +97,7 @@ public class SeatPlayer extends HumanPlayer {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("autopay unpaid=" + unpaid.getText() + " sources=" + sources.size() + " plan=" + plan);
             }
-            if (plan.payable() && (!plan.ambiguous() || !askWhenAmbiguous)) {
+            if (plan.payable() && (!plan.ambiguous() || !askWhenAmbiguous) && !floatingPoolCanHelp(pips)) {
                 AutoPay.Pick pick = plan.pick();
                 ActivatedManaAbilityImpl ability = abilities.get(pick.output().abilityId());
                 Permanent perm = permanents.get(pick.source().id());
@@ -118,6 +119,38 @@ public class SeatPlayer extends HumanPlayer {
             }
         }
         return super.playManaHandling(abilityToCast, unpaid, promptText, game);
+    }
+
+    /**
+     * Whether the still-floating pool has anything that could pay part of
+     * what is left: spending it is always the player's own click on the
+     * mana prompt's pool button, never silent and never forced (docs/
+     * board-ui.md "Paying with several sources") — so AutoPay's silent
+     * tap-a-source path must not preempt that click just because the board
+     * alone can already cover the rest. Report ed184e0607 (2026-09-18):
+     * Selvala floated six mana in three colours, two colours' worth were
+     * spent through the prompt, and the remaining {@code {1}} of an
+     * unrelated ability got tapped from untouched lands without ever
+     * asking again — the four other floating mana sat unused because
+     * {@link #sources} only looks at permanents, never the pool.
+     */
+    private boolean floatingPoolCanHelp(List<AutoPay.Pip> pips) {
+        if (pips == null || getManaPool().isEmpty()) {
+            return false;
+        }
+        Mana floating = getManaPool().getMana();
+        for (AutoPay.Pip pip : pips) {
+            EnumSet<AutoPay.Kind> accepts = pip.accepts();
+            if ((accepts.contains(AutoPay.Kind.W) && floating.getWhite() > 0)
+                    || (accepts.contains(AutoPay.Kind.U) && floating.getBlue() > 0)
+                    || (accepts.contains(AutoPay.Kind.B) && floating.getBlack() > 0)
+                    || (accepts.contains(AutoPay.Kind.R) && floating.getRed() > 0)
+                    || (accepts.contains(AutoPay.Kind.G) && floating.getGreen() > 0)
+                    || (accepts.contains(AutoPay.Kind.C) && floating.getColorless() > 0)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
