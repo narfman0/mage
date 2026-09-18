@@ -377,7 +377,47 @@ public final class DecisionRenderer {
                 targets = ids;
             }
         }
-        return targetChoices(r, targets, offered, view, me, e.isRequired());
+        List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired());
+        chosenSoFar(r, e);
+        return backing;
+    }
+
+    /**
+     * A prompt for several targets comes round once per pick: HumanPlayer
+     * sends what is picked so far as options["chosenTargets"] (picking one
+     * of those again removes it), and once the minimum is met the prompt is
+     * no longer required and its right button reads "Done"
+     * (options["UI.right.btn.text"]). Both were dropped, so the board
+     * re-offered the chosen targets unmarked and labelled Done "Cancel"
+     * (the engine-UI sweep, fullpod docs/engine-ui-surface.md, 2026-09-18).
+     * Each chosen choice is flagged and listed; the label rides as done_text.
+     */
+    @SuppressWarnings("unchecked")
+    private void chosenSoFar(Map<String, Object> r, PlayerQueryEvent e) {
+        Map<String, Serializable> options = e.getOptions();
+        if (options == null) {
+            return;
+        }
+        Object raw = options.get("chosenTargets");
+        if (raw instanceof Set<?> ids && !ids.isEmpty()) {
+            List<String> chosen = new ArrayList<>();
+            for (Object id : ids) {
+                if (id instanceof UUID uuid) {
+                    chosen.add(views.shortId(uuid));
+                }
+            }
+            for (Object c : (List<Object>) r.get("choices")) {
+                Map<String, Object> choice = (Map<String, Object>) c;
+                if (chosen.contains(String.valueOf(choice.get("id")))) {
+                    choice.put("chosen", true);
+                }
+            }
+            r.put("chosen", chosen);
+        }
+        Object done = options.get("UI.right.btn.text");
+        if (done != null) {
+            r.put("done_text", Fmt.stripHtml(done.toString()));
+        }
     }
 
     /** The legal subset of a card search's zone, when HumanPlayer computed one
