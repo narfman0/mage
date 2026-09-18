@@ -179,7 +179,7 @@ public final class Views {
             info.put("power", cv.getPower());
             info.put("toughness", cv.getToughness());
         }
-        List<String> rules = Fmt.stripHtmlList(cv.getRules());
+        List<String> rules = Fmt.rulesList(cv.getRules());
         if (rules != null && !rules.isEmpty()) {
             info.put("rules", rules);
         }
@@ -245,10 +245,10 @@ public final class Views {
                 // "Pick triggered ability": two triggers off one permanent share a
                 // name; the rule text is what makes the choice answerable.
                 entry.put("target_type", "ability");
-                List<String> rules = Fmt.stripHtmlList(cv.getRules());
+                List<String> rules = Fmt.rulesList(cv.getRules());
                 if (rules != null && !rules.isEmpty()) {
                     entry.put("rules", rules);
-                    entry.put("text", String.join(" ", rules));
+                    entry.put("text", String.join(" ", Fmt.stripHtmlList(rules)));
                 }
                 return cv;
             }
@@ -316,7 +316,7 @@ public final class Views {
                 }
             }
             if (includeRules) {
-                item.put("rules", Fmt.stripHtmlList(card.getRules()));
+                item.put("rules", Fmt.rulesList(card.getRules()));
             }
             if (card.getControllerId() != null) {
                 String owner = gameView.getPlayerName(card.getControllerId());
@@ -501,10 +501,10 @@ public final class Views {
             info.put("token", true);
         }
         CardView orig = perm.getOriginal();
-        if (orig != null && !Objects.equals(Fmt.stripHtmlList(perm.getRules()), Fmt.stripHtmlList(orig.getRules()))) {
+        if (orig != null && !Objects.equals(Fmt.rulesList(perm.getRules()), Fmt.rulesList(orig.getRules()))) {
             info.put("modified", true);
         }
-        List<String> rules = Fmt.stripHtmlList(perm.getRules());
+        List<String> rules = Fmt.rulesList(perm.getRules());
         if (rules != null && !rules.isEmpty()) {
             info.put("rules", rules);
         }
@@ -549,7 +549,7 @@ public final class Views {
             Map<String, Object> card = new HashMap<>();
             card.put("id", shortId(e.getKey()));
             card.put("name", displayName(e.getValue()));
-            List<String> rules = Fmt.stripHtmlList(e.getValue().getRules());
+            List<String> rules = Fmt.rulesList(e.getValue().getRules());
             if (rules != null && !rules.isEmpty()) {
                 card.put("rules", rules);
             }
