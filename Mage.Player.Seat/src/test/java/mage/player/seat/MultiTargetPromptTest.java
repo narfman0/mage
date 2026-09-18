@@ -69,8 +69,14 @@ public class MultiTargetPromptTest {
                 if ("GAME_TARGET".equals(type) && message.contains("starting player")) {
                     args = Map.of("choice", indexOfYou(d));
                 } else if ("GAME_TARGET".equals(type) && cast && firstPick == null) {
-                    // The first round: nothing chosen yet, every Bear offered.
+                    // The first round: nothing chosen yet, every Bear offered, and the
+                    // prompt says which card is asking (the engine's second message).
                     Assert.assertNull("nothing chosen on the first round: " + d, d.get("chosen"));
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> source = (Map<String, Object>) d.get("source");
+                    Assert.assertNotNull("the source of the prompt: " + d, source);
+                    Assert.assertEquals("Frost Breath", source.get("name"));
+                    Assert.assertNotNull("resolved to the spell's id: " + source, source.get("id"));
                     Assert.assertEquals(Boolean.TRUE, d.get("can_cancel"));
                     List<Map<String, Object>> choices = ScriptedSeat.choices(d);
                     Assert.assertEquals("two Bears offered: " + choices, 2, choices.size());
