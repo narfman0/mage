@@ -213,6 +213,12 @@ public class SpecialManaActionTest {
                     Map<String, Object> board = GameHostTest.board(d);
                     Assert.assertEquals("seven cards delved away: " + board, 7, ((List<?>) board.get("exile")).size());
                     Assert.assertEquals("the graveyard holds the resolved Cruise alone: " + board, 1, ((List<?>) board.get("graveyard")).size());
+                    // The engine's dynamic hint on the delve card rides apart from its rules.
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> cruise = (Map<String, Object>) ((List<?>) board.get("graveyard")).get(0);
+                    Assert.assertEquals(List.of(Map.of("text", "Cards in your graveyard: 1")), cruise.get("hints"));
+                    Assert.assertTrue("rules without the marker: " + cruise, String.valueOf(cruise.get("rules")).contains("Draw three cards.")
+                            && !String.valueOf(cruise.get("rules")).contains("hintstart"));
                     Assert.assertEquals("drew three: " + board, 60 - 3, ((Number) board.get("library_size")).intValue());
                     Assert.assertEquals("seven picks: " + prompts, 7, picks);
                     Assert.assertEquals("the Island, then the delve: " + prompts, 2, prompts.size());
