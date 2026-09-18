@@ -398,9 +398,14 @@ public final class Views {
      */
     public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId, Game game) {
         List<Map<String, Object>> players = new ArrayList<>();
-        for (PlayerView player : stablePlayers(gameView, myPlayerId)) {
+        List<PlayerView> ordered = game != null ? turnOrder(gameView, myPlayerId, game) : stablePlayers(gameView, myPlayerId);
+        for (PlayerView player : ordered) {
             Map<String, Object> info = new HashMap<>();
             info.put("name", player.getName());
+            // Seats in turn order from this one (0 = the seat itself), so a
+            // client lays the ring out and names the previous seat without
+            // trusting the array's order.
+            info.put("turn_order", players.size());
             info.put("life", player.getLife());
             info.put("library_size", player.getLibraryCount());
             info.put("hand_size", player.getHandCount());
@@ -844,6 +849,39 @@ public final class Views {
                 info.put("toughness", c.getToughness());
             }
             out.add(info);
+        }
+        return out;
+    }
+
+    /**
+     * The seats in turn order, starting from this one: the game's player
+     * list is the cycle the turns go round (a starting player only picks
+     * where it begins), rotated so the seat itself is first. The list is a
+     * CircularList that inserts at the front, so the cycle runs opposite to
+     * seating order — seated A, B, C, D the turns go A, D, C, B; the
+     * engine's quirk, and what the board must say. Before (2026-09-18) the
+     * rest were sorted by engine username, so the board's ring and its
+     * "previous seat" agreed with the table only by luck of the names.
+     */
+    private static List<PlayerView> turnOrder(GameView gameView, UUID myPlayerId, Game game) {
+        List<UUID> cycle = new ArrayList<>(game.getState().getPlayerList());
+        List<PlayerView> byId = new ArrayList<>(gameView.getPlayers());
+        List<PlayerView> out = new ArrayList<>();
+        int start = myPlayerId != null ? cycle.indexOf(myPlayerId) : -1;
+        for (int i = 0; i < cycle.size(); i++) {
+            UUID id = cycle.get((Math.max(start, 0) + i) % cycle.size());
+            for (PlayerView pv : byId) {
+                if (pv.getPlayerId().equals(id)) {
+                    out.add(pv);
+                    break;
+                }
+            }
+        }
+        // A view player the list doesn't know (never, but the board must not lose a seat).
+        for (PlayerView pv : stablePlayers(gameView, myPlayerId)) {
+            if (!out.contains(pv)) {
+                out.add(pv);
+            }
         }
         return out;
     }
