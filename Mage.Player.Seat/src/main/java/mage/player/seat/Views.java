@@ -179,11 +179,24 @@ public final class Views {
             info.put("power", cv.getPower());
             info.put("toughness", cv.getToughness());
         }
-        List<String> rules = Fmt.rulesList(cv.getRules());
-        if (rules != null && !rules.isEmpty()) {
-            info.put("rules", rules);
-        }
+        rulesAndHints(info, cv.getRules());
         return info;
+    }
+
+    /**
+     * A card's {@code rules} (the printed markup, {@link Fmt#rules}) and,
+     * apart from them, its {@code hints}: the engine's dynamic lines — "Cards
+     * in your graveyard: 3", "Can't attack (Pacifism)", "Goaded by …" — each
+     * {@code {text, kind?}} ({@link Fmt#splitRules}).
+     */
+    static void rulesAndHints(Map<String, Object> info, List<String> raw) {
+        Fmt.Split split = Fmt.splitRules(raw);
+        if (split.rules() != null && !split.rules().isEmpty()) {
+            info.put("rules", split.rules());
+        }
+        if (!split.hints().isEmpty()) {
+            info.put("hints", split.hints());
+        }
     }
 
     private String cardDescription(CardView cv) {
@@ -245,7 +258,7 @@ public final class Views {
                 // "Pick triggered ability": two triggers off one permanent share a
                 // name; the rule text is what makes the choice answerable.
                 entry.put("target_type", "ability");
-                List<String> rules = Fmt.rulesList(cv.getRules());
+                List<String> rules = Fmt.splitRules(cv.getRules()).rules();
                 if (rules != null && !rules.isEmpty()) {
                     entry.put("rules", rules);
                     entry.put("text", String.join(" ", Fmt.stripHtmlList(rules)));
@@ -316,7 +329,7 @@ public final class Views {
                 }
             }
             if (includeRules) {
-                item.put("rules", Fmt.rulesList(card.getRules()));
+                item.put("rules", Fmt.splitRules(card.getRules()).rules());
             }
             if (card.getControllerId() != null) {
                 String owner = gameView.getPlayerName(card.getControllerId());
@@ -500,13 +513,18 @@ public final class Views {
         if (perm.isToken()) {
             info.put("token", true);
         }
+        // `original` is built without the game, so it never carries hints:
+        // compare the rules alone, or every hinted permanent reads as modified.
+        Fmt.Split split = Fmt.splitRules(perm.getRules());
         CardView orig = perm.getOriginal();
-        if (orig != null && !Objects.equals(Fmt.rulesList(perm.getRules()), Fmt.rulesList(orig.getRules()))) {
+        if (orig != null && !Objects.equals(split.rules(), Fmt.splitRules(orig.getRules()).rules())) {
             info.put("modified", true);
         }
-        List<String> rules = Fmt.rulesList(perm.getRules());
-        if (rules != null && !rules.isEmpty()) {
-            info.put("rules", rules);
+        if (split.rules() != null && !split.rules().isEmpty()) {
+            info.put("rules", split.rules());
+        }
+        if (!split.hints().isEmpty()) {
+            info.put("hints", split.hints());
         }
         String nameOwner = perm.getNameOwner();
         if (nameOwner != null && !nameOwner.isEmpty()) {
@@ -549,10 +567,7 @@ public final class Views {
             Map<String, Object> card = new HashMap<>();
             card.put("id", shortId(e.getKey()));
             card.put("name", displayName(e.getValue()));
-            List<String> rules = Fmt.rulesList(e.getValue().getRules());
-            if (rules != null && !rules.isEmpty()) {
-                card.put("rules", rules);
-            }
+            rulesAndHints(card, e.getValue().getRules());
             out.add(card);
         }
         return out;
