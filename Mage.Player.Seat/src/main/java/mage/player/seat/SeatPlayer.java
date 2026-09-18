@@ -105,6 +105,13 @@ public class SeatPlayer extends HumanPlayer {
 
     @Override
     protected boolean playManaHandling(Ability abilityToCast, ManaCost unpaid, String promptText, Game game) {
+        // Convoke, delve, improvise, assist: an alternate way to pay that the
+        // engine registers for this payment round and offers through the
+        // prompt's "special" answer. For a person that makes the payment
+        // theirs to choose (tap the Forest, or tap the Bear), so the silent
+        // path is skipped; and nothing is ever cancelled for want of a source
+        // while one of these can pay.
+        boolean specialPayment = !game.getState().getSpecialActions().getControlledBy(playerId, true).isEmpty();
         if (autoPay && unpaid != null && !mustAsk(abilityToCast, game)) {
             Map<UUID, ActivatedManaAbilityImpl> abilities = new HashMap<>();
             Map<UUID, Permanent> permanents = new HashMap<>();
@@ -114,7 +121,7 @@ public class SeatPlayer extends HumanPlayer {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("autopay unpaid=" + unpaid.getText() + " sources=" + sources.size() + " plan=" + plan);
             }
-            if (plan.payable() && (!plan.ambiguous() || !askWhenAmbiguous) && !floatingPoolCanHelp(pips)) {
+            if (plan.payable() && (!(plan.ambiguous() || specialPayment) || !askWhenAmbiguous) && !floatingPoolCanHelp(pips)) {
                 AutoPay.Pick pick = plan.pick();
                 ActivatedManaAbilityImpl ability = abilities.get(pick.output().abilityId());
                 Permanent perm = permanents.get(pick.source().id());
@@ -129,13 +136,28 @@ public class SeatPlayer extends HumanPlayer {
                 }
                 return true;
             }
-            if (!plan.payable() && !anySource(abilityToCast, game) && getManaPool().count() == 0) {
+            if (!plan.payable() && !specialPayment && !anySource(abilityToCast, game) && getManaPool().count() == 0) {
                 // Nothing on the board can pay: cancel the way a person would, with a word.
                 game.informPlayer(this, "Couldn't pay " + Fmt.stripHtml(promptText) + ": no mana source can pay it");
                 return false;
             }
         }
         return super.playManaHandling(abilityToCast, unpaid, promptText, game);
+    }
+
+    /**
+     * The prompt's "special" answer: one special action is activated as is
+     * (the Swing client's one-entry picker is a tap for nothing); several
+     * are the engine's own picker, as upstream.
+     */
+    @Override
+    protected void activateSpecialAction(Game game, ManaCost unpaidForManaAction) {
+        Map<UUID, mage.abilities.SpecialAction> actions = game.getState().getSpecialActions().getControlledBy(playerId, unpaidForManaAction != null);
+        if (actions.size() == 1) {
+            activateAbility(actions.values().iterator().next(), game);
+            return;
+        }
+        super.activateSpecialAction(game, unpaidForManaAction);
     }
 
     /**

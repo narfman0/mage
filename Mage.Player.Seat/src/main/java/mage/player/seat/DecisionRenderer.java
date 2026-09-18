@@ -125,10 +125,10 @@ public final class DecisionRenderer {
         r.putAll(situation(game, player, view));
         List<Object> backing = switch (e.getQueryType()) {
             case ASK -> ask(r, e, view);
-            case SELECT -> select(r, e, game, view, offerManaSources);
+            case SELECT -> select(r, e, game, view, player.getId(), offerManaSources);
             case PICK_TARGET -> target(r, e, game, view, player.getId());
             case PICK_ABILITY -> pickAbility(r, e, game, view, player.getId());
-            case PLAY_MANA, PLAY_X_MANA -> mana(r, e, view);
+            case PLAY_MANA, PLAY_X_MANA -> mana(r, e, game, view, player.getId());
             case CHOOSE_ABILITY -> abilityPicker(r, e, game);
             case CHOOSE_MODE -> modes(r, e);
             case CHOOSE_CHOICE -> choice(r, e);
@@ -171,7 +171,7 @@ public final class DecisionRenderer {
     }
 
     @SuppressWarnings("unchecked")
-    private List<Object> select(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, boolean offerManaSources) {
+    private List<Object> select(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, UUID me, boolean offerManaSources) {
         r.put("action_type", "GAME_SELECT");
         List<Map<String, Object>> choices = new ArrayList<>();
         List<Object> backing = new ArrayList<>();
@@ -314,6 +314,9 @@ public final class DecisionRenderer {
                 }
             }
         }
+        if (options == null || (!options.containsKey("possibleAttackers") && !options.containsKey("possibleBlockers"))) {
+            specialActions(choices, backing, game, me, false);
+        }
         if (!choices.isEmpty()) {
             r.put("response_type", "select");
             r.put("choices", choices);
@@ -321,6 +324,45 @@ public final class DecisionRenderer {
         }
         r.put("response_type", "boolean");
         return List.of();
+    }
+
+    /**
+     * The engine's "Special" button: special actions the seat controls right
+     * now, answered with the string {@code "special"} the way the Swing client
+     * does. At a priority window these are the rare priority-window actions
+     * (Channel's life for mana, Quenchable Fire's payment); at a mana prompt
+     * they are the alternate ways to pay — convoke, delve, improvise, assist —
+     * which {@code ManaCostsImpl.pay} registers for each payment round and
+     * which are reachable no other way (the engine-UI sweep, fullpod
+     * docs/engine-ui-surface.md, 2026-09-18). One choice per action, named
+     * from its rule ("Convoke", "Delve") with the reminder text as
+     * {@code ability}; every one is backed by "special" — the engine asks
+     * which when there are several ({@link SeatPlayer#activateSpecialAction}).
+     */
+    private void specialActions(List<Map<String, Object>> choices, List<Object> backing, Game game, UUID me, boolean manaAction) {
+        for (mage.abilities.SpecialAction action : game.getState().getSpecialActions().getControlledBy(me, manaAction).values()) {
+            // "Exile up to seven cards from your graveyard: Delve (Each card you
+            // exile …)" → "Delve": the keyword is the effect's text before its
+            // reminder, after any cost.
+            String rule = Fmt.stripHtml(action.getRule());
+            String name = rule;
+            int paren = name.indexOf(" (");
+            if (paren > 0) {
+                name = name.substring(0, paren);
+            }
+            int colon = name.lastIndexOf(": ");
+            if (colon >= 0) {
+                name = name.substring(colon + 2);
+            }
+            Map<String, Object> c = new HashMap<>();
+            c.put("index", choices.size());
+            c.put("id", "special");
+            c.put("choice_type", "special");
+            c.put("name", name);
+            c.put("ability", rule);
+            choices.add(c);
+            backing.add("special");
+        }
     }
 
     private List<Map<String, Object>> attackersInCombat(GameView view) {
@@ -480,7 +522,7 @@ public final class DecisionRenderer {
         return backing;
     }
 
-    private List<Object> mana(Map<String, Object> r, PlayerQueryEvent e, GameView view) {
+    private List<Object> mana(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, UUID me) {
         r.put("action_type", e.getQueryType() == PlayerQueryEvent.QueryType.PLAY_X_MANA ? "GAME_PLAY_XMANA" : "GAME_PLAY_MANA");
         List<Map<String, Object>> choices = new ArrayList<>();
         List<Object> backing = new ArrayList<>();
@@ -524,6 +566,18 @@ public final class DecisionRenderer {
             c.put("count", poolCount(pool, type));
             choices.add(c);
             backing.add(type);
+        }
+        int before = choices.size();
+        specialActions(choices, backing, game, me, true);
+        if (choices.size() > before) {
+            // The engine's order (ActivatedManaAbilityImpl.canActivate): once a
+            // special payment has been used on a spell, no mana ability may pay
+            // for it — so sources go first, the special action pays what is left.
+            List<String> names = new ArrayList<>();
+            for (int i = before; i < choices.size(); i++) {
+                names.add(String.valueOf(choices.get(i).get("name")));
+            }
+            r.put("note", "Tap sources first; " + String.join(" / ", names) + " pays what is left — once used, lands can't pay for this spell.");
         }
         if (!choices.isEmpty()) {
             r.put("response_type", "select");
