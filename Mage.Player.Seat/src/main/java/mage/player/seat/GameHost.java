@@ -551,7 +551,9 @@ public final class GameHost {
             }
             backing = d.backing.get(index);
         } catch (NumberFormatException ignored) {
-            if (choice.equals("all") && d.backing.contains("special")) {
+            if ((choice.equals("all") || choice.equals("special")) && d.backing.contains("special")) {
+                // "All attack" on a declare-attackers window; a special action
+                // (convoke, delve; Channel) at a mana prompt or a priority window.
                 backing = "special";
             } else {
                 UUID id = views.resolve(choice);
