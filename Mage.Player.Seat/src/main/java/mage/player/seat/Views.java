@@ -331,6 +331,10 @@ public final class Views {
             if (includeRules) {
                 item.put("rules", Fmt.splitRules(card.getRules()).rules());
             }
+            Integer x = announcedX(card);
+            if (x != null) {
+                item.put("x", x);
+            }
             if (card.getControllerId() != null) {
                 String owner = gameView.getPlayerName(card.getControllerId());
                 if (owner != null) {
@@ -418,7 +422,7 @@ public final class Views {
                 List<PermanentView> sorted = new ArrayList<>(player.getBattlefield().values());
                 sorted.sort(Comparator.<PermanentView, String>comparing(this::displayName).thenComparingInt(p -> sequence(p.getId())));
                 for (PermanentView perm : sorted) {
-                    battlefield.add(permanentInfo(perm));
+                    battlefield.add(permanentInfo(perm, gameView));
                 }
             }
             if (!battlefield.isEmpty()) {
@@ -510,7 +514,7 @@ public final class Views {
         return info;
     }
 
-    private Map<String, Object> permanentInfo(PermanentView perm) {
+    private Map<String, Object> permanentInfo(PermanentView perm, GameView gameView) {
         Map<String, Object> info = new HashMap<>();
         info.put("id", shortId(perm.getId()));
         info.put("name", displayName(perm));
@@ -555,6 +559,18 @@ public final class Views {
         }
         if (perm.isAttachedToPermanent() && perm.getAttachedTo() != null) {
             info.put("attached_to", shortId(perm.getAttachedTo()));
+            // An aura on a creature is shown on the *host's* controller's
+            // battlefield (PlayerView.showInBattlefield), so an opponent's
+            // Pacifism sits in your host group: say whose it is.
+            if (perm.isAttachedToDifferentlyControlledPermanent() && perm.getNameController() != null) {
+                info.put("controller", perm.getNameController());
+            }
+        } else if (perm.getAttachedTo() != null) {
+            // A curse: attached to a player, shown on its controller's battlefield.
+            String who = gameView != null ? gameView.getPlayerName(perm.getAttachedTo()) : null;
+            if (who != null) {
+                info.put("attached_to_player", who);
+            }
         }
         if (perm.getAttachments() != null && !perm.getAttachments().isEmpty()) {
             List<String> attachments = new ArrayList<>();
@@ -572,10 +588,42 @@ public final class Views {
         if (perm.isCopy()) {
             info.put("copy", true);
         }
-        if (perm.isMorphed() || perm.isManifested()) {
+        if (perm.isMorphed() || perm.isManifested() || perm.isDisguised() || perm.isCloaked()) {
             info.put("face_down", true);
+            info.put("face_down_kind", perm.isMorphed() ? "morph" : perm.isManifested() ? "manifest" : perm.isDisguised() ? "disguise" : "cloak");
+        }
+        // State the board drops otherwise (the engine-UI sweep, fullpod
+        // docs/engine-ui-surface.md, 2026-09-18): damage marked this turn,
+        // a phased-out permanent (looks absent, controls nothing), and the X
+        // announced for a permanent cast with one.
+        if (perm.getDamage() > 0) {
+            info.put("damage", perm.getDamage());
+        }
+        if (!perm.isPhasedIn()) {
+            info.put("phased_out", true);
+        }
+        Integer x = announcedX(perm);
+        if (x != null) {
+            info.put("x", x);
         }
         return info;
+    }
+
+    /** The X announced for a spell or ability, from the engine's own card icon ("x=5"). */
+    static Integer announcedX(CardView cv) {
+        if (cv.getCardIcons() == null) {
+            return null;
+        }
+        for (mage.abilities.icon.CardIcon icon : cv.getCardIcons()) {
+            if (icon.getIconType() == mage.abilities.icon.CardIconType.OTHER_COST_X && icon.getText().startsWith("x=")) {
+                try {
+                    return Integer.parseInt(icon.getText().substring(2));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     private List<Map<String, Object>> zoneCards(CardsView zone) {
