@@ -94,6 +94,12 @@ public final class Views {
                 if (cmd instanceof CommanderView cv && cmd.getId().equals(objectId)) {
                     return cv;
                 }
+                if (cmd.getId().equals(objectId)) {
+                    CardView asCard = commandObjectView(cmd);
+                    if (asCard != null) {
+                        return asCard;
+                    }
+                }
             }
         }
         for (ExileView exileZone : gameView.getExile()) {
@@ -454,6 +460,10 @@ public final class Views {
             if (!commanders.isEmpty()) {
                 info.put("commanders", commanders);
             }
+            List<Map<String, Object>> objects = commandObjects(player);
+            if (!objects.isEmpty()) {
+                info.put("command_zone", objects);
+            }
             // The top of a library that is public (Courser of Kruphix, Oracle of
             // Mul Daya): the card, with its id so a play from the top is a real
             // land/cast choice (the engine-UI sweep, fullpod
@@ -494,6 +504,54 @@ public final class Views {
             }
         }
         return out;
+    }
+
+    /**
+     * The command zone's non-commander objects: a planeswalker's emblem (a
+     * permanent rule of the game with no card on the board to read it from),
+     * a dungeon (venture: the current room is a hint), a plane. Each with
+     * its rules and hints, and an id so an emblem's activated ability is a
+     * choice with a ref (the engine-UI sweep, fullpod
+     * docs/engine-ui-surface.md, 2026-09-18).
+     */
+    private List<Map<String, Object>> commandObjects(PlayerView player) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (player.getCommandObjectList() == null) {
+            return out;
+        }
+        for (CommandObjectView cmd : player.getCommandObjectList()) {
+            String kind;
+            if (cmd instanceof mage.view.EmblemView) {
+                kind = "emblem";
+            } else if (cmd instanceof mage.view.DungeonView) {
+                kind = "dungeon";
+            } else if (cmd instanceof mage.view.PlaneView) {
+                kind = "plane";
+            } else {
+                continue; // commanders: `commanders`, from the game
+            }
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("kind", kind);
+            info.put("id", shortId(cmd.getId()));
+            info.put("name", Fmt.stripHtml(cmd.getName()));
+            rulesAndHints(info, cmd.getRules());
+            out.add(info);
+        }
+        return out;
+    }
+
+    /** A command-zone object other than a commander, as a card view (for a playable's name and choice). */
+    private static CardView commandObjectView(CommandObjectView cmd) {
+        if (cmd instanceof mage.view.EmblemView e) {
+            return new CardView(e);
+        }
+        if (cmd instanceof mage.view.DungeonView d) {
+            return new CardView(d);
+        }
+        if (cmd instanceof mage.view.PlaneView pl) {
+            return new CardView(pl);
+        }
+        return null;
     }
 
     /**
