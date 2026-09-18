@@ -693,12 +693,26 @@ public final class DecisionRenderer {
                 r.put("message", Fmt.stripHtml(choice.getMessage()));
             }
             r.put("required", choice.isRequired());
+            if (choice.getSubMessage() != null && !choice.getSubMessage().isEmpty()) {
+                r.put("sub_message", Fmt.stripHtml(choice.getSubMessage()));
+            }
+            // What the Swing dialog has and the board didn't (the engine-UI
+            // sweep, fullpod docs/engine-ui-surface.md, 2026-09-18): each
+            // item's card or object (hintData — the replacement-effect
+            // question sets the effect's source), the engine's sort order,
+            // and a search box for a long list (a creature type is ~300).
+            Map<String, List<String>> hints = choice.getHintData() != null ? choice.getHintData() : Map.of();
+            Map<String, Integer> sorts = choice.getSortData() != null ? choice.getSortData() : Map.of();
             if (choice.isKeyChoice()) {
                 if (choice.getKeyChoices() != null) {
                     for (Map.Entry<String, String> entry : choice.getKeyChoices().entrySet()) {
                         Map<String, Object> c = new HashMap<>();
                         c.put("index", choices.size());
                         c.put("description", Fmt.stripHtml(entry.getValue()));
+                        itemHint(c, hints.get(entry.getKey()));
+                        if (sorts.get(entry.getKey()) != null) {
+                            c.put("sort", sorts.get(entry.getKey()));
+                        }
                         choices.add(c);
                         backing.add(entry.getKey());
                     }
@@ -708,13 +722,38 @@ public final class DecisionRenderer {
                     Map<String, Object> c = new HashMap<>();
                     c.put("index", choices.size());
                     c.put("description", value);
+                    itemHint(c, hints.get(value));
+                    if (sorts.get(value) != null) {
+                        c.put("sort", sorts.get(value));
+                    }
                     choices.add(c);
                     backing.add(value);
                 }
             }
+            if (choice.isSearchEnabled() && choices.size() > 12) {
+                r.put("searchable", true);
+            }
         }
         r.put("choices", choices);
         return backing;
+    }
+
+    /** A choice item's hint: {@code [type, value]} — a card by name, or a game object by UUID. */
+    private void itemHint(Map<String, Object> c, List<String> hint) {
+        if (hint == null || hint.size() < 2 || hint.get(1) == null) {
+            return;
+        }
+        String type = hint.get(0);
+        String value = hint.get(1);
+        if ("GAME_OBJECT".equals(type)) {
+            try {
+                c.put("id", views.shortId(UUID.fromString(value)));
+            } catch (IllegalArgumentException ignored) {
+                // not a UUID: nothing to link
+            }
+        } else if ("CARD".equals(type) || "CARD_DUNGEON".equals(type)) {
+            c.put("card", Fmt.stripHtml(value));
+        }
     }
 
     private List<Object> pile(Map<String, Object> r, PlayerQueryEvent e, Game game) {
