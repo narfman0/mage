@@ -54,6 +54,8 @@ public final class DecisionRenderer {
     private static final ManaType[] SYMBOL_TYPES = {
         ManaType.WHITE, ManaType.BLUE, ManaType.BLACK, ManaType.RED, ManaType.GREEN, ManaType.COLORLESS,
     };
+    /** A pip any colour pays: generic, or twobrid ({2/W}: two of anything or one white). */
+    private static final Pattern GENERIC = Pattern.compile("\\x7b\\d+(?:/[WUBRG])?\\x7d");
 
     private final Views views;
 
@@ -659,7 +661,13 @@ public final class DecisionRenderer {
                 }
             }
         }
-        if (explicit) {
+        // A generic pip in what's left ("{1}", "{2}"...) takes mana of any
+        // colour, so a floating colour with no matching coloured pip still
+        // needs a button (report a9bddc7747, 2026-09-17: "Pay {1}{B}" with
+        // {B} and {G} both floating offered only "Black" — nothing spent the
+        // green, and nothing said the tap-a-source options were the only way).
+        boolean generic = prompt != null && GENERIC.matcher(prompt).find();
+        if (explicit && !generic) {
             return out;
         }
         for (ManaType type : SYMBOL_TYPES) {
