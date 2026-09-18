@@ -679,6 +679,15 @@ public final class GameHost {
         seat(seatName).player.setAutoPay(enabled);
     }
 
+    /**
+     * Full control: the seat is asked at every priority window, including
+     * the one right after its own cast ({@link SeatPlayer#setPassAfterOwnAction}).
+     * Off (the default), that window is passed by the engine itself.
+     */
+    public void setFullControl(String seatName, boolean enabled) {
+        seat(seatName).player.setPassAfterOwnAction(!enabled);
+    }
+
     /** Ends the game (the engine tells the players) and waits briefly for the game thread. */
     public void end() {
         if (!game.hasEnded()) {
