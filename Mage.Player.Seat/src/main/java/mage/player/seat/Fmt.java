@@ -5,9 +5,10 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * Text clean-up for prompts and rules: strip the engine's HTML and the
- * " [58c]" object-id suffixes it embeds in log names. Ported from mage-bench's
- * BridgePromptFormatting (MIT, Gregor Stocks).
+ * Text clean-up for prompts: strip the engine's HTML and the " [58c]"
+ * object-id suffixes it embeds in log names. Ported from mage-bench's
+ * BridgePromptFormatting (MIT, Gregor Stocks). Rules text is the exception
+ * ({@link #rules}): its markup is card information and travels as written.
  */
 public final class Fmt {
 
@@ -33,6 +34,32 @@ public final class Fmt {
         List<String> out = new ArrayList<>(list.size());
         for (String s : list) {
             out.add(stripHtml(s));
+        }
+        return out;
+    }
+
+    /**
+     * Rules text as the engine wrote it. Its markup is the printed card's:
+     * {@code <i>Channel</i> &mdash;} is an ability word, a trailing
+     * {@code <i>(…)</i>} is reminder text, {@code <br>} a line break — the
+     * client renders that vocabulary (and nothing else) rather than have it
+     * stripped here and guessed back later. Only the object-id suffix, which
+     * is ours, is dropped.
+     */
+    public static String rules(String s) {
+        if (s == null || s.isEmpty()) {
+            return s;
+        }
+        return HEX_SUFFIX.matcher(s).replaceAll("");
+    }
+
+    public static List<String> rulesList(List<String> list) {
+        if (list == null) {
+            return null;
+        }
+        List<String> out = new ArrayList<>(list.size());
+        for (String s : list) {
+            out.add(rules(s));
         }
         return out;
     }
