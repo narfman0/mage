@@ -236,6 +236,49 @@ public class GameHostTest {
         Assert.assertFalse("questions followed the activation", afterActivation.isEmpty());
     }
 
+    /**
+     * A typed library search only offers the legal subset (report 7b2f2ef77e:
+     * Worldly Tutor — "search your library for a creature card" — offered
+     * every creature AND every land). HumanPlayer.choose(Cards, TargetCard, ...)
+     * only ever puts the legal subset in options["possibleTargets"]; it never
+     * fills e.getTargets(), so DecisionRenderer.target() used to fall back to
+     * "every card in the zone is legal".
+     */
+    @Test(timeout = 240_000)
+    public void worldlyTutorOnlyOffersCreatures() throws Exception {
+        String deck = "src/test/resources/decks/worldly_tutor_forests.dck";
+        GameHost host = new GameHost(new GameHost.Config("tutor", "duel", 1L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", deck, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)), true));
+        ScriptedSeat script = new ScriptedSeat();
+        host.start();
+        boolean sawSearchPrompt = false;
+        try {
+            for (int i = 0; i < 300; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                List<Map<String, Object>> choices = ScriptedSeat.choices(d);
+                boolean isLibrarySearch = "GAME_TARGET".equals(d.get("action_type"))
+                        && choices.stream().anyMatch(c -> "Grizzly Bears".equals(c.get("name")) || "Forest".equals(c.get("name")));
+                if (isLibrarySearch) {
+                    sawSearchPrompt = true;
+                    Assert.assertTrue("at least one creature offered: " + choices, choices.stream().anyMatch(c -> "Grizzly Bears".equals(c.get("name"))));
+                    Assert.assertFalse("a land offered for a creature search: " + choices, choices.stream().anyMatch(c -> "Forest".equals(c.get("name"))));
+                    break;
+                }
+                Map<String, Object> tutor = choices.stream()
+                        .filter(c -> "Worldly Tutor".equals(c.get("name")) && "cast".equals(c.get("action"))).findFirst().orElse(null);
+                Map<String, Object> args = tutor != null ? Map.of("choice", String.valueOf(tutor.get("index"))) : script.answer(d);
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+        } finally {
+            host.end();
+        }
+        Assert.assertTrue("reached Worldly Tutor's search prompt", sawSearchPrompt);
+    }
+
     @SuppressWarnings("unchecked")
     static Map<String, Object> board(Map<String, Object> d) {
         return ((List<Map<String, Object>>) d.get("board")).get(0);
