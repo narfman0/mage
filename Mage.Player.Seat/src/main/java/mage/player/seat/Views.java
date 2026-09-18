@@ -60,6 +60,26 @@ public final class Views {
         return shortIds.getSequence(objectId);
     }
 
+    /**
+     * The object behind a log ref — the {@code [a3f]} the engine appends to a
+     * name in prompts and log lines, the first three hex digits of its UUID
+     * (GameLog.getColoredObjectIdName). Found among the objects this game has
+     * named: every deck card is registered at creation, a token or an
+     * ability once the board or a choice has shown it.
+     */
+    public UUID byLogRef(String ref) {
+        if (ref == null || ref.length() != 3) {
+            return null;
+        }
+        for (String shortId : shortIds.snapshotShortIds()) {
+            UUID id = shortIds.tryResolve(shortId);
+            if (id != null && id.toString().startsWith(ref)) {
+                return id;
+            }
+        }
+        return null;
+    }
+
     // ---- locating -------------------------------------------------------
 
     public CardView findCardView(UUID objectId, GameView gameView) {
