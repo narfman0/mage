@@ -79,6 +79,9 @@ public final class Views {
             if (permanent != null) {
                 return permanent;
             }
+            if (player.getTopCard() != null && objectId.equals(player.getTopCard().getId())) {
+                return player.getTopCard();
+            }
             found = player.getGraveyard().get(objectId);
             if (found != null) {
                 return found;
@@ -451,6 +454,15 @@ public final class Views {
             if (!commanders.isEmpty()) {
                 info.put("commanders", commanders);
             }
+            // The top of a library that is public (Courser of Kruphix, Oracle of
+            // Mul Daya): the card, with its id so a play from the top is a real
+            // land/cast choice (the engine-UI sweep, fullpod
+            // docs/engine-ui-surface.md, 2026-09-18).
+            if (player.getTopCard() != null) {
+                Map<String, Object> top = cardInfo(player.getTopCard());
+                top.put("id", shortId(player.getTopCard().getId()));
+                info.put("top_card", top);
+            }
             players.add(info);
         }
         return players;
@@ -674,6 +686,52 @@ public final class Views {
             mana.put("C", pool.getColorless());
         }
         return mana;
+    }
+
+    /**
+     * The engine's revealed piles (a tutor's find, a revealed hand, Fact or
+     * Fiction's five — public to everyone) and the piles this seat looked at
+     * without a choice (Sensei's Divining Top, an opponent's hand via Peek),
+     * each named by the engine, for as long as it keeps them.
+     */
+    public List<Map<String, Object>> revealed(GameView gameView, Game game) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (mage.view.RevealedView r : gameView.getRevealed()) {
+            List<Map<String, Object>> cards = new ArrayList<>();
+            for (Map.Entry<UUID, CardView> e : r.getCards().entrySet()) {
+                Map<String, Object> card = cardInfo(e.getValue());
+                card.put("id", shortId(e.getKey()));
+                cards.add(card);
+            }
+            Map<String, Object> pile = new LinkedHashMap<>();
+            pile.put("name", Fmt.stripHtml(r.getName()));
+            pile.put("cards", cards);
+            out.add(pile);
+        }
+        return out;
+    }
+
+    public List<Map<String, Object>> lookedAt(GameView gameView, Game game) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (mage.view.LookedAtView l : gameView.getLookedAt()) {
+            List<Map<String, Object>> cards = new ArrayList<>();
+            // A looked-at pile is ids and printings only (SimpleCardView); the
+            // card itself is in the game.
+            for (UUID id : l.getCards().keySet()) {
+                Card card = game.getCard(id);
+                if (card == null) {
+                    continue;
+                }
+                Map<String, Object> info = cardInfo(new CardView(card, game));
+                info.put("id", shortId(id));
+                cards.add(info);
+            }
+            Map<String, Object> pile = new LinkedHashMap<>();
+            pile.put("name", Fmt.stripHtml(l.getName()));
+            pile.put("cards", cards);
+            out.add(pile);
+        }
+        return out;
     }
 
     public List<Map<String, Object>> combatGroups(GameView gameView) {

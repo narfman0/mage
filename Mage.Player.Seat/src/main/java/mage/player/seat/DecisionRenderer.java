@@ -98,6 +98,14 @@ public final class DecisionRenderer {
         if (combat != null) {
             r.put("combat", combat);
         }
+        List<Map<String, Object>> revealed = views.revealed(view, game);
+        if (!revealed.isEmpty()) {
+            r.put("revealed", revealed);
+        }
+        List<Map<String, Object>> lookedAt = views.lookedAt(view, game);
+        if (!lookedAt.isEmpty()) {
+            r.put("looked_at", lookedAt);
+        }
         PlayerView myView = view.getMyPlayer();
         if (myView != null && myView.getBattlefield() != null) {
             int untapped = 0;
@@ -200,9 +208,15 @@ public final class DecisionRenderer {
                     continue;
                 }
                 CardView cv = views.findCardView(objectId, view);
+                // The revealed top of a library (Courser's land drop, Bolas's
+                // Citadel's cast): a real play, from there.
+                boolean fromLibrary = cv != null && game.getState().getZone(objectId) == Zone.LIBRARY;
                 Map<String, Object> c = new HashMap<>();
                 c.put("index", choices.size());
                 c.put("id", views.shortId(objectId));
+                if (fromLibrary) {
+                    c.put("from", "library");
+                }
                 if (cv != null) {
                     c.put("name", views.displayName(cv));
                 } else {
@@ -235,7 +249,7 @@ public final class DecisionRenderer {
                         c.put("power", cv.getPower());
                         c.put("toughness", cv.getToughness());
                     }
-                } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null)
+                } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null && !fromLibrary)
                         || (!stats.hasCast() && !stats.hasBasicPlay())) {
                     // Not castable or playable as a land from where it is — a hand
                     // card whose play is a granted ability (Satoru's ninjutsu on a
