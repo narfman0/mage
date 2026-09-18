@@ -609,7 +609,12 @@ public final class Views {
         return info;
     }
 
-    /** The X announced for a spell or ability, from the engine's own card icon ("x=5"). */
+    /**
+     * The X announced for a spell or ability, from the engine's own card icon
+     * ("x=5"). Zero is left out: the icon reads 0 while X is still being
+     * announced (the spell is on the stack already), and a spell for X=0 is
+     * nothing the board needs a badge for.
+     */
     static Integer announcedX(CardView cv) {
         if (cv.getCardIcons() == null) {
             return null;
@@ -617,7 +622,8 @@ public final class Views {
         for (mage.abilities.icon.CardIcon icon : cv.getCardIcons()) {
             if (icon.getIconType() == mage.abilities.icon.CardIconType.OTHER_COST_X && icon.getText().startsWith("x=")) {
                 try {
-                    return Integer.parseInt(icon.getText().substring(2));
+                    int x = Integer.parseInt(icon.getText().substring(2));
+                    return x > 0 ? x : null;
                 } catch (NumberFormatException ignored) {
                     return null;
                 }
