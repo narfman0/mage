@@ -123,6 +123,12 @@ public class AutoPayGameTest {
                     for (Object o : (List<?>) board.get("battlefield")) {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> perm = (Map<String, Object>) o;
+                        // The seat passes the window after its own cast, so the next
+                        // decision may be past the spell's resolution: the spell itself
+                        // (a creature, untapped) is not one of the sources under test.
+                        if (spell.equals(String.valueOf(perm.get("name")))) {
+                            continue;
+                        }
                         (Boolean.TRUE.equals(perm.get("tapped")) ? tapped : untapped).add(String.valueOf(perm.get("name")));
                     }
                     life = ((Number) board.get("life")).intValue();
@@ -420,6 +426,12 @@ public class AutoPayGameTest {
                     for (Object o : (List<?>) board.get("battlefield")) {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> perm = (Map<String, Object>) o;
+                        // The seat passes the window after its own cast, so the next
+                        // decision may be past the spell's resolution: the spell itself
+                        // (a creature, untapped) is not one of the sources under test.
+                        if (spell.equals(String.valueOf(perm.get("name")))) {
+                            continue;
+                        }
                         (Boolean.TRUE.equals(perm.get("tapped")) ? tapped : untapped).add(String.valueOf(perm.get("name")));
                     }
                     life = ((Number) board.get("life")).intValue();

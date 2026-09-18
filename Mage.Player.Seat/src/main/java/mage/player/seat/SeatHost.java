@@ -197,6 +197,9 @@ public final class SeatHost {
                 if (args.get("auto_pay") != null) {
                     host.setAutoPay(seat(args), Boolean.TRUE.equals(args.get("auto_pay")));
                 }
+                if (args.get("full_control") != null) {
+                    host.setFullControl(seat(args), Boolean.TRUE.equals(args.get("full_control")));
+                }
             }
             case "end_game" -> {
                 GameHost host = games.remove(String.valueOf(args.get("game_id")));

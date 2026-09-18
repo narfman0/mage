@@ -65,6 +65,7 @@ public class SeatPlayer extends HumanPlayer {
     public SeatPlayer(String name, RangeOfInfluence range) {
         super(name, range, 0);
         setUserData(UserData.getDefaultUserDataView());
+        setPassAfterOwnAction(true);
     }
 
     protected SeatPlayer(SeatPlayer player) {
@@ -84,6 +85,22 @@ public class SeatPlayer extends HumanPlayer {
 
     public void setAskWhenAmbiguous(boolean ask) {
         this.askWhenAmbiguous = ask;
+    }
+
+    /**
+     * Pass priority after your own cast or non-mana activation instead of
+     * being asked "respond to your own spell?" — XMage's own client defaults
+     * to this ({@code passPriorityCast}/{@code passPriorityActivation} in its
+     * preferences); {@link UserData#getDefaultUserDataView} does not, and a
+     * seat that inherits that default is asked at every cast where it holds
+     * an instant (owner decision, 2026-09-18: the window goes). Off under
+     * the product's full control, which is how a person holds priority to
+     * respond to their own spell. HumanPlayer.priority reads the flags from
+     * the shared UserData, so this applies to every copy of the player.
+     */
+    public void setPassAfterOwnAction(boolean pass) {
+        getUserData().setPassPriorityCast(pass);
+        getUserData().setPassPriorityActivation(pass);
     }
 
     @Override
