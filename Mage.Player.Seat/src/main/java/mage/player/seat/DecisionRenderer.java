@@ -293,13 +293,37 @@ public final class DecisionRenderer {
                 r.put("combat_phase", "declare_attackers");
                 if (!already.isEmpty()) {
                     r.put("already_attacking", already);
+                    if (attackers.isEmpty()) {
+                        // Every creature is attacking: the engine re-asks only to confirm.
+                        r.put("confirm", true);
+                    }
                 }
+                // Who can be attacked — players, planeswalkers, battles — so a
+                // client at a pod picks the defender with the attackers instead of
+                // meeting the engine's per-attacker question (GameHost's batch).
+                List<Map<String, Object>> defenders = defenders(game, view, me);
+                r.put("defenders", defenders);
                 for (UUID id : attackers) {
                     PermanentView perm = views.findPermanentView(id, view);
                     if (perm == null) {
                         continue;
                     }
                     Map<String, Object> c = creatureChoice(choices.size(), id, perm, "attacker");
+                    // An attacker that may not attack every defender (goaded, "can't
+                    // attack you"): its own subset, by id.
+                    Permanent attacker = game.getPermanent(id);
+                    if (attacker != null && defenders.size() > 1) {
+                        List<String> can = new ArrayList<>();
+                        for (Map<String, Object> def : defenders) {
+                            UUID defId = views.resolve(String.valueOf(def.get("id")));
+                            if (defId != null && attacker.canAttack(defId, game)) {
+                                can.add(String.valueOf(def.get("id")));
+                            }
+                        }
+                        if (can.size() < defenders.size()) {
+                            c.put("defenders", can);
+                        }
+                    }
                     choices.add(c);
                     backing.add(id);
                 }
@@ -378,6 +402,33 @@ public final class DecisionRenderer {
             choices.add(c);
             backing.add("special");
         }
+    }
+
+    /** The combat's defenders: each player, planeswalker and battle that can be attacked, as {id, name, kind}. */
+    private List<Map<String, Object>> defenders(Game game, GameView view, UUID me) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (UUID id : game.getCombat().getDefenders()) {
+            Map<String, Object> d = new LinkedHashMap<>();
+            d.put("id", views.shortId(id));
+            mage.players.Player player = game.getPlayer(id);
+            if (player != null) {
+                d.put("name", player.getName());
+                d.put("kind", "player");
+            } else {
+                Permanent perm = game.getPermanent(id);
+                if (perm == null) {
+                    continue;
+                }
+                d.put("name", perm.getName());
+                d.put("kind", perm.isBattle(game) ? "battle" : "planeswalker");
+                mage.players.Player controller = game.getPlayer(perm.getControllerId());
+                if (controller != null) {
+                    d.put("controller", controller.getName());
+                }
+            }
+            out.add(d);
+        }
+        return out;
     }
 
     private List<Map<String, Object>> attackersInCombat(GameView view) {

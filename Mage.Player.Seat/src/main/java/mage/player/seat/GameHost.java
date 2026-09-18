@@ -75,7 +75,7 @@ public final class GameHost {
         }
     }
 
-    private enum Kind { SELECT_ATTACKERS, SELECT_BLOCKERS, PICK_TARGET, OTHER }
+    private enum Kind { SELECT_ATTACKERS, SELECT_BLOCKERS, PICK_DEFENDER, PICK_TARGET, OTHER }
 
     private final Config config;
     private final Game game;
@@ -247,7 +247,16 @@ public final class GameHost {
         }
     }
 
-    /** A pending batch (attackers=..., blockers=...) answers the engine's re-asks itself. */
+    /**
+     * A pending batch (attackers=..., blockers=...) answers the engine's
+     * re-asks itself. With two or more opponents the engine asks which
+     * player, planeswalker or battle each attacker attacks
+     * (HumanPlayer.selectDefender, one PICK_TARGET per attacker; one for
+     * "All attack"): a DEFENDER step answers it, a step the engine never
+     * asks for (one defender, or a forced one) is skipped, and a defender
+     * question with no step behind it is the person's — the batch waits,
+     * since the engine comes back to the attackers window after it.
+     */
     private boolean answerFromBatch(Seat seat, PlayerQueryEvent e) {
         Seat.Step step;
         while ((step = seat.batch.peek()) != null) {
@@ -259,6 +268,9 @@ public final class GameHost {
                         auto.submit(() -> respondBoolean(seat, true));
                         return true;
                     }
+                    if (kind == Kind.PICK_DEFENDER) {
+                        return false; // theirs to answer; the confirm follows
+                    }
                 }
                 case ATTACKER -> {
                     if (kind == Kind.SELECT_ATTACKERS) {
@@ -266,6 +278,29 @@ public final class GameHost {
                         UUID id = step.id();
                         auto.submit(() -> respondUuid(seat, id));
                         return true;
+                    }
+                    if (kind == Kind.PICK_DEFENDER) {
+                        return false; // the previous attacker's defender, asked of the person
+                    }
+                }
+                case DEFENDER -> {
+                    if (kind == Kind.PICK_DEFENDER && e.getTargets() != null && e.getTargets().contains(step.id())) {
+                        seat.batch.poll();
+                        UUID id = step.id();
+                        auto.submit(() -> respondUuid(seat, id));
+                        return true;
+                    }
+                    if (kind == Kind.SELECT_ATTACKERS) {
+                        // One legal defender: the engine assigned it without asking.
+                        seat.batch.poll();
+                        continue;
+                    }
+                    if (kind == Kind.PICK_DEFENDER) {
+                        // The asked-for defender isn't legal for this attacker (forced
+                        // elsewhere): drop the step, the question is the person's.
+                        seat.batch.poll();
+                        seat.say("[System] " + Fmt.stripHtml(e.getMessage()) + ": the chosen defender isn't legal for this attacker");
+                        return false;
                     }
                 }
                 case BLOCKER -> {
@@ -300,7 +335,9 @@ public final class GameHost {
 
     private static Kind classify(PlayerQueryEvent e) {
         if (e.getQueryType() == PlayerQueryEvent.QueryType.PICK_TARGET) {
-            return Kind.PICK_TARGET;
+            // TargetDefender's own name: "player, planeswalker, or battle to attack".
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            return msg.contains(" to attack") ? Kind.PICK_DEFENDER : Kind.PICK_TARGET;
         }
         if (e.getQueryType() == PlayerQueryEvent.QueryType.SELECT && e.getOptions() != null) {
             // HumanPlayer sends the key on every re-ask of the loop, even once every
@@ -577,34 +614,77 @@ public final class GameHost {
         return null;
     }
 
+    /**
+     * {@code attackers=p1>P2,p3>P3}: each entry an attacker's short id, with
+     * {@code >} and the defender's (a player, planeswalker or battle short id)
+     * when there is a choice; {@code all>P2} sends everything at one
+     * defender. A bare {@code p1} leaves the defender to the engine — assigned
+     * when there is one, asked of the person otherwise.
+     */
     private String batchAttack(Seat seat, Decision d, List<Object> ids) {
         seat.batch.clear();
-        if (ids.size() == 1 && "all".equals(String.valueOf(ids.get(0)))) {
+        if (ids.size() == 1 && String.valueOf(ids.get(0)).startsWith("all")) {
             if (!d.backing.contains("special")) {
                 throw new IllegalArgumentException("no 'all attack' option right now");
+            }
+            UUID defender = defenderOf(String.valueOf(ids.get(0)), d);
+            if (defender != null) {
+                seat.batch.add(new Seat.Step(Seat.StepKind.DEFENDER, defender));
             }
             seat.batch.add(new Seat.Step(Seat.StepKind.CONFIRM, null));
             respondString(seat, "special");
             return "batch_attack";
         }
         List<UUID> attackers = new ArrayList<>();
+        List<UUID> defenders = new ArrayList<>();
         for (Object o : ids) {
-            UUID id = views.resolve(String.valueOf(o));
+            String entry = String.valueOf(o);
+            String attacker = entry.contains(">") ? entry.substring(0, entry.indexOf('>')).trim() : entry.trim();
+            UUID id = views.resolve(attacker);
             if (id == null || !d.backing.contains(id)) {
-                throw new IllegalArgumentException("'" + o + "' can't attack right now");
+                throw new IllegalArgumentException("'" + attacker + "' can't attack right now");
             }
             attackers.add(id);
+            defenders.add(defenderOf(entry, d));
         }
         if (attackers.isEmpty()) {
             respondBoolean(seat, true);
             return "no_attack";
         }
-        for (int i = 1; i < attackers.size(); i++) {
-            seat.batch.add(new Seat.Step(Seat.StepKind.ATTACKER, attackers.get(i)));
+        for (int i = 0; i < attackers.size(); i++) {
+            if (i > 0) {
+                seat.batch.add(new Seat.Step(Seat.StepKind.ATTACKER, attackers.get(i)));
+            }
+            if (defenders.get(i) != null) {
+                seat.batch.add(new Seat.Step(Seat.StepKind.DEFENDER, defenders.get(i)));
+            }
         }
         seat.batch.add(new Seat.Step(Seat.StepKind.CONFIRM, null));
         respondUuid(seat, attackers.get(0));
         return "batch_attack";
+    }
+
+    /** The defender named after {@code >} in an attackers entry, checked against the window's defenders; null when none is named. */
+    @SuppressWarnings("unchecked")
+    private UUID defenderOf(String entry, Decision d) {
+        int gt = entry.indexOf('>');
+        if (gt < 0) {
+            return null;
+        }
+        String name = entry.substring(gt + 1).trim();
+        UUID byId = views.resolve(name);
+        UUID found = null;
+        if (d.result.get("defenders") instanceof List<?> list) {
+            for (Object o : list) {
+                if (o instanceof Map<?, ?> m && (name.equals(m.get("name")) || (byId != null && views.shortId(byId).equals(m.get("id"))))) {
+                    found = views.resolve(String.valueOf(m.get("id")));
+                }
+            }
+        }
+        if (found == null) {
+            throw new IllegalArgumentException("'" + name + "' can't be attacked right now");
+        }
+        return found;
     }
 
     private String batchBlock(Seat seat, Decision d, List<Object> pairs) {

@@ -9,7 +9,7 @@ import java.util.UUID;
 /** One human-facing seat of a hosted game: its player, the question it owes an answer to, and messages for it. */
 final class Seat {
 
-    enum StepKind { ATTACKER, BLOCKER, BLOCK_TARGET, CONFIRM }
+    enum StepKind { ATTACKER, DEFENDER, BLOCKER, BLOCK_TARGET, CONFIRM }
 
     /** One engine response of a batch combat declaration still to be sent. */
     record Step(StepKind kind, UUID id) {
