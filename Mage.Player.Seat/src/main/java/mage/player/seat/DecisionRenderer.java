@@ -73,6 +73,15 @@ public final class DecisionRenderer {
 
     /** Context, board, stack and combat: the part of every result that isn't the question. */
     public Map<String, Object> situation(Game game, SeatPlayer player, GameView view) {
+        return situation(game, player, view, Map.of());
+    }
+
+    /**
+     * The same, with why each of the seat's unlit objects is unlit
+     * ({@link Unlit}) — computed once per render and only at a priority
+     * window, so it rides here rather than being derived per card.
+     */
+    public Map<String, Object> situation(Game game, SeatPlayer player, GameView view, Map<UUID, Map<String, Object>> unlit) {
         Map<String, Object> r = new LinkedHashMap<>();
         UUID me = player.getId();
         boolean myTurn = me.equals(game.getActivePlayerId());
@@ -89,7 +98,7 @@ public final class DecisionRenderer {
             ctx.append(" YOUR_MAIN");
         }
         r.put("context", ctx.toString());
-        r.put("board", views.players(view, me, game));
+        r.put("board", views.players(view, me, game, unlit));
         List<Map<String, Object>> stack = views.stackItems(view, me, false);
         if (!stack.isEmpty()) {
             r.put("stack", stack);
@@ -130,7 +139,13 @@ public final class DecisionRenderer {
         r.put("action_pending", true);
         r.put("game_seq", seq);
         r.put("message", Fmt.stripHtml(e.getMessage()));
-        r.putAll(situation(game, player, view));
+        // Why the unlit cards are unlit: only at a priority window (a combat
+        // window offers creatures, not plays), only for this seat's objects,
+        // once for the whole render.
+        Map<UUID, Map<String, Object>> unlit = e.getQueryType() == PlayerQueryEvent.QueryType.SELECT && isPriorityWindow(e)
+                ? Unlit.reasons(game, player, view)
+                : Map.of();
+        r.putAll(situation(game, player, view, unlit));
         List<Object> backing = switch (e.getQueryType()) {
             case ASK -> ask(r, e, view, game);
             case SELECT -> select(r, e, game, view, player, offerManaSources);
@@ -374,7 +389,7 @@ public final class DecisionRenderer {
                 }
             }
         }
-        if (options == null || (!options.containsKey("possibleAttackers") && !options.containsKey("possibleBlockers"))) {
+        if (isPriorityWindow(e)) {
             specialActions(choices, backing, game, me, false);
             // XMage's UNDO is on: the state before this seat's mana tap is
             // bookmarked until it passes, plays a land or completes a cast
@@ -390,6 +405,16 @@ public final class DecisionRenderer {
         }
         r.put("response_type", "boolean");
         return List.of();
+    }
+
+    /**
+     * A SELECT window that is priority, not a combat declaration: the engine
+     * marks the combat ones with the creatures they offer.
+     */
+    private static boolean isPriorityWindow(PlayerQueryEvent e) {
+        Map<String, Serializable> options = e.getOptions();
+        return options == null
+                || (!options.containsKey("possibleAttackers") && !options.containsKey("possibleBlockers"));
     }
 
     /**

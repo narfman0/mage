@@ -3,6 +3,7 @@ package mage.player.seat;
 import mage.ConditionalMana;
 import mage.Mana;
 import mage.abilities.Ability;
+import mage.abilities.ActivatedAbility;
 import mage.abilities.TriggeredAbility;
 import mage.abilities.costs.Cost;
 import mage.abilities.costs.common.TapSourceCost;
@@ -17,6 +18,7 @@ import mage.abilities.effects.Effect;
 import mage.abilities.effects.mana.AddConditionalManaEffect;
 import mage.abilities.effects.mana.ManaEffect;
 import mage.abilities.mana.ActivatedManaAbilityImpl;
+import mage.abilities.mana.ManaOptions;
 import mage.cards.Card;
 import mage.cards.CardImpl;
 import mage.constants.AbilityType;
@@ -133,6 +135,18 @@ public class SeatPlayer extends HumanPlayer {
     public void setPassAfterOwnAction(boolean pass) {
         getUserData().setPassPriorityCast(pass);
         getUserData().setPassPriorityActivation(pass);
+    }
+
+    /**
+     * Can this seat's mana pay what the ability costs right now? The engine's
+     * own affordability check — the one {@code getPlayable} makes, phyrexian
+     * pips included — which is protected on {@code PlayerImpl} and so
+     * reachable only from a player. {@link Unlit} asks it to say "needs
+     * {@code {2}{G}{G}}, you can make {@code {1}{G}}" instead of reimplementing
+     * the comparison.
+     */
+    public boolean canAffordMana(ActivatedAbility ability, ManaOptions available, Game game) {
+        return canPayMinimumManaCost(ability, available, game);
     }
 
     @Override
