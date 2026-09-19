@@ -795,6 +795,11 @@ public abstract class PlayerImpl implements Player, Serializable {
             Card card = isDrawsFromBottom() ? getLibrary().drawFromBottom(game) : getLibrary().drawFromTop(game);
             if (card != null) {
                 card.moveToZone(Zone.HAND, source, game, false); // if you want to use event.getSourceId() here then thinks x10 times
+                // A zone change clears the abilities continuous effects granted to the card, so effects
+                // that give cards in a hand an ability (example: Aminatou, Veil Piercer granting miracle)
+                // must be re-applied before anything reads the drawn card's abilities — the miracle
+                // watcher does exactly that, on the event fired below.
+                game.applyEffects();
                 if (isTopCardRevealed() && !isDrawsFromBottom()) {
                     game.informPlayers(getLogName() + " draws a revealed card  (" + card.getLogName() + ')');
                 }
