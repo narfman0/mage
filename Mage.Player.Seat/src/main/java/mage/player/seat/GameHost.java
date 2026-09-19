@@ -5,8 +5,10 @@ import mage.cards.decks.Deck;
 import mage.cards.decks.DeckCardLists;
 import mage.cards.decks.importer.DeckImporter;
 import mage.collectors.DataCollectorServices;
+import mage.collectors.services.ServerGameEventLogCollector;
 import mage.constants.ManaType;
 import mage.constants.MultiplayerAttackOption;
+import mage.constants.PlayerAction;
 import mage.constants.RangeOfInfluence;
 import mage.game.CommanderFreeForAll;
 import mage.game.CommanderFreeForAllMatch;
@@ -475,7 +477,9 @@ public final class GameHost {
     /**
      * Answers the seat's pending question. Arguments as mage-bench's
      * choose_action: choice (index, short id, yes/no), attackers, blockers,
-     * amount, amounts, pile, text.
+     * amount, amounts, pile, text — plus {@code remember}, which answers and
+     * tells the engine to answer this question itself from now on
+     * ({@link #rememberAnswer}).
      */
     public Map<String, Object> chooseAction(String seatName, Map<String, Object> args) {
         Seat seat = seat(seatName);
@@ -536,11 +540,16 @@ public final class GameHost {
                     if (choice == null) {
                         return error("missing_param", "choice, attackers, blockers, amount, amounts, pile or text is required", true);
                     }
-                    Map<String, Object> err = answerChoice(seat, d, String.valueOf(choice).trim());
+                    String remember = args.get("remember") == null ? null : String.valueOf(args.get("remember")).trim();
+                    Map<String, Object> err = remember == null ? null : rememberAnswer(seat, d, String.valueOf(choice).trim(), remember);
                     if (err != null) {
                         return err;
                     }
-                    taken = String.valueOf(choice);
+                    err = answerChoice(seat, d, String.valueOf(choice).trim(), remember != null);
+                    if (err != null) {
+                        return err;
+                    }
+                    taken = String.valueOf(choice) + (remember == null ? "" : "_remembered");
                 }
             } catch (RuntimeException ex) {
                 LOG.error("choose_action failed for " + seatName, ex);
@@ -554,7 +563,106 @@ public final class GameHost {
         }
     }
 
-    private Map<String, Object> answerChoice(Seat seat, Decision d, String choice) {
+    /**
+     * "Always answer this the same way" (docs/board-ui.md "Remembered
+     * answers"): the answer goes back as usual and the engine is told to
+     * answer this question itself from here on. The memory is the engine's
+     * own — {@link mage.player.human.HumanPlayer}'s per-player maps — so the
+     * seat stores nothing, and a resume replays a remembered answer as the
+     * engine's own non-question the way an auto-ordered trigger already does.
+     *
+     * <ul>
+     *   <li>a yes/no ask: {@code ability} keys on the asking ability and the
+     *       question, {@code text} on the question alone (any card asking it);</li>
+     *   <li>a trigger-order pick: {@code first} / {@code last} puts that
+     *       ability first or last every time it triggers with others;</li>
+     *   <li>the replacement-effect order: {@code answer} is the engine's own
+     *       "Remember answer" special, sent as a {@code #}-prefixed key.</li>
+     * </ul>
+     *
+     * Registered before the answer is sent: the game thread is parked on the
+     * question until then, so the triggered abilities a trigger memory looks
+     * itself up in are still the ones this question was asked about.
+     */
+    private Map<String, Object> rememberAnswer(Seat seat, Decision d, String choice, String remember) {
+        if ("GAME_ASK".equals(d.actionType())) {
+            boolean yes = choice.equalsIgnoreCase("yes") || choice.equalsIgnoreCase("true");
+            if (!yes && !choice.equalsIgnoreCase("no") && !choice.equalsIgnoreCase("false")) {
+                return error("invalid_choice", "remember= on a yes/no question needs choice=yes or choice=no", true);
+            }
+            if (!"ability".equals(remember) && !"text".equals(remember)) {
+                return error("invalid_choice", "remember= on a yes/no question is 'ability' or 'text'", true);
+            }
+            Map<String, java.io.Serializable> options = d.event.getOptions();
+            Object autoAnswer = options == null ? null : options.get("autoAnswerMessage");
+            Object originalId = options == null ? null : options.get("originalId");
+            if (autoAnswer == null) {
+                return error("invalid_choice", "this question carries nothing to remember it by", true);
+            }
+            // Nothing asked it (a mulligan): the question itself is the only key.
+            boolean byAbility = "ability".equals(remember) && originalId != null;
+            String key = byAbility ? originalId + "#" + autoAnswer : String.valueOf(autoAnswer);
+            PlayerAction action = byAbility
+                    ? (yes ? PlayerAction.REQUEST_AUTO_ANSWER_ID_YES : PlayerAction.REQUEST_AUTO_ANSWER_ID_NO)
+                    : (yes ? PlayerAction.REQUEST_AUTO_ANSWER_TEXT_YES : PlayerAction.REQUEST_AUTO_ANSWER_TEXT_NO);
+            recordRemember(seat, remember);
+            seat.player.sendPlayerAction(action, game, key);
+            return null;
+        }
+        if (d.event.getQueryType() == PlayerQueryEvent.QueryType.PICK_ABILITY) {
+            if (!"first".equals(remember) && !"last".equals(remember)) {
+                return error("invalid_choice", "remember= on a trigger-order question is 'first' or 'last'", true);
+            }
+            UUID ability = triggerOf(d, choice);
+            if (ability == null) {
+                return error("invalid_choice", "'" + choice + "' is not one of the triggers", true);
+            }
+            recordRemember(seat, remember);
+            seat.player.sendPlayerAction("first".equals(remember)
+                    ? PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_FIRST
+                    : PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_LAST, game, ability);
+            return null;
+        }
+        if ("GAME_CHOOSE_CHOICE".equals(d.actionType())) {
+            if (!"answer".equals(remember)) {
+                return error("invalid_choice", "remember= on a list question is 'answer'", true);
+            }
+            if (d.event.getChoice() == null || !d.event.getChoice().isSpecialEnabled()) {
+                return error("invalid_choice", "this list question has no remembered answer", true);
+            }
+            return null; // answerChoice sends the #-prefixed key
+        }
+        return error("invalid_choice", "this question can't remember an answer", true);
+    }
+
+    /**
+     * Tells the record that the answer about to be sent also remembers itself,
+     * so a resume applies it at the same decision and the resumed game stops
+     * being asked exactly where this one did (ReplayFeederCollector). The
+     * scope alone is recorded: the key is built from the live question, whose
+     * ability id is new every game.
+     */
+    private void recordRemember(Seat seat, String remember) {
+        DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(),
+                ServerGameEventLogCollector.REMEMBER, remember);
+    }
+
+    /** The trigger a trigger-order answer (index or short id) stands for; null when it isn't one. */
+    private UUID triggerOf(Decision d, String choice) {
+        Object backing = null;
+        try {
+            int index = (int) Double.parseDouble(choice);
+            if (index >= 0 && index < d.backing.size()) {
+                backing = d.backing.get(index);
+            }
+        } catch (NumberFormatException ignored) {
+            UUID id = views.resolve(choice);
+            backing = id != null && d.backing.contains(id) ? id : null;
+        }
+        return backing instanceof UUID id ? id : null;
+    }
+
+    private Map<String, Object> answerChoice(Seat seat, Decision d, String choice, boolean remember) {
         String type = d.actionType();
         if (choice.equalsIgnoreCase("yes") || choice.equalsIgnoreCase("no") || choice.equalsIgnoreCase("true") || choice.equalsIgnoreCase("false")) {
             boolean yes = choice.equalsIgnoreCase("yes") || choice.equalsIgnoreCase("true");
@@ -609,7 +717,9 @@ public final class GameHost {
         } else if (backing instanceof ManaType manaType) {
             respondManaType(seat, manaType);
         } else {
-            respondString(seat, String.valueOf(backing));
+            // A remembered list answer is the same key with the engine's own
+            // "Remember answer" marker on it (HumanPlayer.chooseReplacementEffect).
+            respondString(seat, (remember ? "#" : "") + backing);
         }
         return null;
     }
@@ -799,6 +909,19 @@ public final class GameHost {
      */
     public void setFullControl(String seatName, boolean enabled) {
         seat(seatName).player.setFullControl(enabled);
+    }
+
+    /**
+     * Forgets every answer this seat told the engine to keep giving —
+     * remembered yes/no answers, trigger order, the replacement-effect
+     * choice — so every question is asked again (docs/board-ui.md
+     * "Remembered answers"). XMage's own three reset actions.
+     */
+    public void forgetAnswers(String seatName) {
+        Seat seat = seat(seatName);
+        seat.player.sendPlayerAction(PlayerAction.REQUEST_AUTO_ANSWER_RESET_ALL, game, null);
+        seat.player.sendPlayerAction(PlayerAction.TRIGGER_AUTO_ORDER_RESET_ALL, game, null);
+        seat.player.sendPlayerAction(PlayerAction.RESET_AUTO_SELECT_REPLACEMENT_EFFECTS, game, null);
     }
 
     /** Ends the game (the engine tells the players) and waits briefly for the game thread. */
