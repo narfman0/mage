@@ -74,8 +74,18 @@ public class SeatHostTest {
                 }
             }
             Assert.assertTrue("a land was played over the socket", sawLandPlay);
-            Map<String, Object> state = call(out, in, "{\"id\":900,\"cmd\":\"state\",\"game_id\":\"g1\",\"seat\":\"You\"}");
-            Assert.assertNotNull(state.get("board"));
+            // `state` renders a running game from the request thread, beside the
+            // game thread: best-effort by contract ("state unavailable: …" while the
+            // engine is mid-step, which the server's poll skips). Ask again briefly.
+            Map<String, Object> state = null;
+            for (int tries = 0; tries < 20; tries++) {
+                state = call(out, in, "{\"id\":900,\"cmd\":\"state\",\"game_id\":\"g1\",\"seat\":\"You\"}");
+                if (state.get("board") != null) {
+                    break;
+                }
+                Thread.sleep(100);
+            }
+            Assert.assertNotNull("state: " + state, state.get("board"));
             Map<String, Object> ended = call(out, in, "{\"id\":901,\"cmd\":\"end_game\",\"game_id\":\"g1\"}");
             Assert.assertEquals(true, ended.get("ended"));
             Map<String, Object> gone = call(out, in, "{\"id\":902,\"cmd\":\"state\",\"game_id\":\"g1\",\"seat\":\"You\"}");
