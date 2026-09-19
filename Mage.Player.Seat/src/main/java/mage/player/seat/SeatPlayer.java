@@ -74,12 +74,30 @@ public class SeatPlayer extends HumanPlayer {
         // both, either turn: the server decides what to pass (its stops are
         // narrower than the engine's would be), and an empty window costs
         // nothing. Upkeep, draw and end of combat stay the engine's to pass.
-        for (mage.players.net.SkipPrioritySteps turn : List.of(data.getUserSkipPrioritySteps().getYourTurn(), data.getUserSkipPrioritySteps().getOpponentTurn())) {
+        setUserData(data);
+        setFullControl(false);
+    }
+
+    /**
+     * Full control: the seat is asked at every window, its own cast's included
+     * — the phase stops all on, the pass-after-cast flags off. Off (the
+     * default): the engine's default stops plus Begin Combat and End Turn on
+     * either turn; upkeep, draw and end of combat are passed by the engine
+     * before the seat sees them, and the window after the seat's own cast
+     * too (fullpod docs/game-runtime.md "Smart stops", "Your own cast is not
+     * a stop").
+     */
+    public void setFullControl(boolean full) {
+        for (mage.players.net.SkipPrioritySteps turn : List.of(getUserData().getUserSkipPrioritySteps().getYourTurn(), getUserData().getUserSkipPrioritySteps().getOpponentTurn())) {
+            turn.setUpkeep(full);
+            turn.setDraw(full);
+            turn.setMain1(true);
             turn.setBeforeCombat(true);
+            turn.setEndOfCombat(full);
+            turn.setMain2(true);
             turn.setEndOfTurn(true);
         }
-        setUserData(data);
-        setPassAfterOwnAction(true);
+        setPassAfterOwnAction(!full);
     }
 
     protected SeatPlayer(SeatPlayer player) {
