@@ -520,7 +520,7 @@ public final class Views {
                 }
                 info.put("counters", counters);
             }
-            List<Object> commanders = commandZone(player, game);
+            List<Object> commanders = commandZone(player, game, unlit);
             if (!commanders.isEmpty()) {
                 info.put("commanders", commanders);
             }
@@ -548,14 +548,14 @@ public final class Views {
      * is physically there, so the view alone forgets a commander that is on
      * the battlefield), each as a card. Without it: the names in the view.
      */
-    private List<Object> commandZone(PlayerView player, Game game) {
+    private List<Object> commandZone(PlayerView player, Game game, Map<UUID, Map<String, Object>> unlit) {
         List<Object> out = new ArrayList<>();
         Player p = game != null ? game.getPlayer(player.getPlayerId()) : null;
         if (p != null) {
             for (UUID id : game.getCommandersIds(p, CommanderCardType.COMMANDER_OR_OATHBREAKER, false)) {
                 Card card = game.getCard(id);
                 if (card != null) {
-                    out.add(commanderInfo(card, game));
+                    out.add(commanderInfo(card, game, unlit));
                 }
             }
             return out;
@@ -623,13 +623,19 @@ public final class Views {
      * keeps as a permanent, so a cast option's ref finds it wherever it is),
      * where it is right now, and the numbers a table shows next to it — how
      * often it has been cast from the command zone and the tax that makes,
-     * and the damage it has dealt to each player (21 is lethal).
+     * and the damage it has dealt to each player (21 is lethal) — and, while
+     * it sits in the zone and the seat can't cast it, why ({@link Unlit},
+     * with the tax already inside the cost the reason names).
      */
-    private Map<String, Object> commanderInfo(Card card, Game game) {
+    private Map<String, Object> commanderInfo(Card card, Game game, Map<UUID, Map<String, Object>> unlit) {
         Map<String, Object> info = cardInfo(new CardView(card, game));
         info.put("id", shortId(card.getId()));
         Zone zone = game.getState().getZone(card.getId());
         info.put("zone", zone == null ? "command" : zone.name().toLowerCase());
+        Map<String, Object> why = unlit.get(card.getId());
+        if (why != null) {
+            info.put("not_playable", why);
+        }
         CommanderPlaysCountWatcher plays = game.getState().getWatcher(CommanderPlaysCountWatcher.class);
         if (plays != null) {
             int count = plays.getPlaysCount(card.getId());

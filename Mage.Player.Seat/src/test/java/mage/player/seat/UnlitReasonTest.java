@@ -83,6 +83,26 @@ public class UnlitReasonTest {
             deck.add(card(library));
         }
         game.cheat(you.getId(), deck, List.of(), perms, List.of(), List.of(), List.of());
+        return drive(host, game, you, marker, duringTheTurn, castFirst);
+    }
+
+    /**
+     * The same first {@code marker} window in a real commander game: Marwyn
+     * ({@code {2}{G}}) over 99 Forests on both sides, nothing cheated. Every
+     * question is declined, so no land is ever played and the commander sits
+     * in the command zone with nothing to cast it with.
+     */
+    private Map<String, Object> commanderWindow(String marker) throws Exception {
+        String deck = "src/test/resources/decks/marwyn_forests.dck";
+        GameHost host = new GameHost(new GameHost.Config("unlit-cmd", "commander", 21L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", deck, 0),
+                        new GameHost.SeatSpec("CPU", "cpu", deck, 6)), true));
+        return drive(host, host.game(), null, marker, null, null);
+    }
+
+    /** Start the host and answer everything until that window, then hand it back. */
+    private Map<String, Object> drive(GameHost host, Game game, Player you, String marker,
+            BiConsumer<Game, Player> duringTheTurn, String castFirst) throws Exception {
         host.start();
         boolean changed = false;
         boolean cast = false;
@@ -159,6 +179,28 @@ public class UnlitReasonTest {
         // phase, so only instant-speed plays are legal.
         Map<String, Object> d = window("Begin Combat", "Grizzly Bears", List.of("Forest", "Forest"), List.of());
         Assert.assertEquals("sorcery speed", reason(card(d, "hand", "Grizzly Bears")));
+    }
+
+    @Test(timeout = 240_000)
+    public void aLandOutsideYourMainSaysSorcerySpeed() throws Exception {
+        // Begin Combat of our own first turn, drop unspent: the moment is what
+        // stops the land, not the drop. Playing one is a special action with
+        // no TimingRule of its own, so the reason comes from the check
+        // PlayLandAbility.canActivate makes rather than the spell one.
+        Map<String, Object> d = window("Begin Combat", "Forest", List.of(), List.of());
+        Object drops = GameHostTest.board(d).get("land_drops");
+        Assert.assertTrue("land drops on the board: " + drops, drops instanceof Map<?, ?>);
+        Assert.assertEquals("the drop is unspent", 0, ((Number) ((Map<?, ?>) drops).get("used")).intValue());
+        Assert.assertEquals("sorcery speed", reason(card(d, "hand", "Forest")));
+    }
+
+    @Test(timeout = 240_000)
+    public void aCommanderInTheCommandZoneSaysWhatItCosts() throws Exception {
+        // The card a Commander player asks about most, and the one whose cost
+        // the tax is folded into (0 casts here, so {2}{G} as printed).
+        Map<String, Object> d = commanderWindow("YOUR_MAIN");
+        Assert.assertEquals("needs {2}{G}, you can make nothing",
+                reason(card(d, "commanders", "Marwyn, the Nurturer")));
     }
 
     @Test(timeout = 240_000)
