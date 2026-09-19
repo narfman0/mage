@@ -68,16 +68,40 @@ public final class Views {
      * ability once the board or a choice has shown it.
      */
     public UUID byLogRef(String ref) {
+        return byLogRef(ref, null, null);
+    }
+
+    /**
+     * Three hex digits name one of 4096 buckets, and a pod's four decks are
+     * ~400 objects, so two of them share a ref more often than not: with the
+     * name beside the ref (the log name is "Pilgrim's Eye [a3f]") the object
+     * so named wins; without it, only an unambiguous ref resolves. (A
+     * four-seat golden replayed with the wrong source card, 2026-09-18.)
+     */
+    public UUID byLogRef(String ref, String name, Game game) {
         if (ref == null || ref.length() != 3) {
             return null;
         }
+        List<UUID> matches = new ArrayList<>();
         for (String shortId : shortIds.snapshotShortIds()) {
             UUID id = shortIds.tryResolve(shortId);
             if (id != null && id.toString().startsWith(ref)) {
-                return id;
+                matches.add(id);
             }
         }
-        return null;
+        if (matches.size() > 1 && name != null && game != null) {
+            List<UUID> named = new ArrayList<>();
+            for (UUID id : matches) {
+                mage.MageObject obj = game.getObject(id);
+                Player player = obj == null ? game.getPlayer(id) : null;
+                String n = obj != null ? obj.getName() : player != null ? player.getName() : null;
+                if (name.equals(n)) {
+                    named.add(id);
+                }
+            }
+            matches = named;
+        }
+        return matches.size() == 1 ? matches.get(0) : null;
     }
 
     // ---- locating -------------------------------------------------------
