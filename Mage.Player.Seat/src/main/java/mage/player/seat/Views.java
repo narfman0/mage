@@ -660,6 +660,16 @@ public final class Views {
         }
         if (perm.isToken()) {
             info.put("token", true);
+            // A token's art is keyed by its *printed* power/toughness (a 3/3
+            // and a 4/4 "Beast" are different prints), but `power`/`toughness`
+            // above are the current values, so an anthem or a +1/+1 counter
+            // would send the wrong signature. `getOriginal()` is the token as
+            // created, which carries the printed pair.
+            CardView asCreated = perm.getOriginal();
+            if (perm.isCreature() && asCreated != null) {
+                info.put("base_power", asCreated.getPower());
+                info.put("base_toughness", asCreated.getToughness());
+            }
         }
         // `original` is built without the game, so it never carries hints:
         // compare the rules alone, or every hinted permanent reads as modified.
