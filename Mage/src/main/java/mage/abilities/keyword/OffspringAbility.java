@@ -1,6 +1,7 @@
 package mage.abilities.keyword;
 
 import mage.abilities.Ability;
+import mage.abilities.DelayedTriggeredAbility;
 import mage.abilities.SpellAbility;
 import mage.abilities.StaticAbility;
 import mage.abilities.common.EntersBattlefieldTriggeredAbility;
@@ -9,12 +10,17 @@ import mage.abilities.costs.*;
 import mage.abilities.costs.mana.ManaCostsImpl;
 import mage.abilities.effects.OneShotEffect;
 import mage.abilities.effects.common.CreateTokenCopyTargetEffect;
+import mage.constants.Duration;
 import mage.constants.Outcome;
 import mage.constants.Zone;
 import mage.game.Game;
+import mage.game.events.GameEvent;
 import mage.game.permanent.Permanent;
 import mage.players.Player;
+import mage.target.targetpointer.FixedTarget;
 import mage.util.CardUtil;
+
+import java.util.UUID;
 
 /**
  * @author TheElk801
@@ -34,6 +40,17 @@ public class OffspringAbility extends StaticAbility implements OptionalAdditiona
     }
 
     public OffspringAbility(Cost cost) {
+        this(cost, true);
+    }
+
+    /**
+     * @param addEntersTrigger printed offspring carries its "when this creature enters" trigger as a
+     *                         sub-ability of the card. Offspring granted while casting (example:
+     *                         {@link mage.abilities.effects.common.continuous.GainOffspringAbilityEffect})
+     *                         is only on the card until it leaves the stack, so it passes false and
+     *                         uses {@link #addOffspringTriggeredAbility} instead.
+     */
+    protected OffspringAbility(Cost cost, boolean addEntersTrigger) {
         super(Zone.STACK, null);
         this.additionalCost = new OptionalAdditionalCostImpl(
                 keywordText + ' ' + cost.getText(),
@@ -42,11 +59,13 @@ public class OffspringAbility extends StaticAbility implements OptionalAdditiona
         this.additionalCost.setRepeatable(false);
         this.rule = additionalCost.getName() + ' ' + additionalCost.getReminderText();
         this.setRuleAtTheTop(true);
-        this.addSubAbility(new EntersBattlefieldTriggeredAbility(new OffspringEffect())
-                .withInterveningIf(OffspringCondition.instance).setRuleVisible(false));
+        if (addEntersTrigger) {
+            this.addSubAbility(new EntersBattlefieldTriggeredAbility(new OffspringEffect())
+                    .withInterveningIf(OffspringCondition.instance).setRuleVisible(false));
+        }
     }
 
-    private OffspringAbility(final OffspringAbility ability) {
+    protected OffspringAbility(final OffspringAbility ability) {
         super(ability);
         this.rule = ability.rule;
         this.additionalCost = ability.additionalCost.copy();
@@ -84,6 +103,53 @@ public class OffspringAbility extends StaticAbility implements OptionalAdditiona
     @Override
     public String getRule() {
         return rule;
+    }
+
+    /**
+     * The token copy for offspring granted as the spell is cast: the granting object is not the
+     * card, so the trigger cannot live on the card, and a delayed trigger on the spell is used.
+     */
+    protected void addOffspringTriggeredAbility(Game game, Ability source) {
+        game.addDelayedTriggeredAbility(new OffspringDelayedTriggeredAbility(), source);
+    }
+}
+
+class OffspringDelayedTriggeredAbility extends DelayedTriggeredAbility {
+
+    OffspringDelayedTriggeredAbility() {
+        super(new OffspringDelayedEffect(), Duration.Custom, true);
+        setTriggerPhrase("When this creature enters, ");
+    }
+
+    private OffspringDelayedTriggeredAbility(final OffspringDelayedTriggeredAbility ability) {
+        super(ability);
+    }
+
+    @Override
+    public OffspringDelayedTriggeredAbility copy() {
+        return new OffspringDelayedTriggeredAbility(this);
+    }
+
+    @Override
+    public boolean checkEventType(GameEvent event, Game game) {
+        return event.getType() == GameEvent.EventType.ENTERS_THE_BATTLEFIELD;
+    }
+
+    @Override
+    public boolean checkTrigger(GameEvent event, Game game) {
+        if (!event.getTargetId().equals(getSourceId())) {
+            return false;
+        }
+        // the permanent that entered, not the spell the delayed trigger was made from
+        getEffects().setTargetPointer(new FixedTarget(event.getTargetId(), game));
+        return true;
+    }
+
+    @Override
+    public boolean isInactive(Game game) {
+        return super.isInactive(game)
+                || game.getStack().getSpell(getSourceId()) == null
+                && game.getPermanent(getSourceId()) == null;
     }
 }
 
@@ -124,5 +190,38 @@ enum OffspringCondition implements Condition {
     @Override
     public String toString() {
         return "its offspring cost was paid";
+    }
+}
+
+class OffspringDelayedEffect extends OneShotEffect {
+
+    OffspringDelayedEffect() {
+        super(Outcome.Benefit);
+        staticText = "create a 1/1 token copy of it";
+    }
+
+    private OffspringDelayedEffect(final OffspringDelayedEffect effect) {
+        super(effect);
+    }
+
+    @Override
+    public OffspringDelayedEffect copy() {
+        return new OffspringDelayedEffect(this);
+    }
+
+    @Override
+    public boolean apply(Game game, Ability source) {
+        UUID permanentId = getTargetPointer().getFirst(game, source);
+        if (permanentId == null) {
+            return false;
+        }
+        Permanent permanent = game.getPermanent(permanentId);
+        if (permanent == null) {
+            permanent = (Permanent) game.getLastKnownInformation(permanentId, Zone.BATTLEFIELD);
+        }
+        return permanent != null && new CreateTokenCopyTargetEffect(
+                null, null, false, 1, false,
+                false, null, 1, 1, false
+        ).setSavedPermanent(permanent).apply(game, source);
     }
 }
