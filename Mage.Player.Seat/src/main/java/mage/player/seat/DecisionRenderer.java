@@ -179,6 +179,21 @@ public final class DecisionRenderer {
                 r.put("yes_text", Fmt.stripHtml(yes.toString()));
                 r.put("no_text", Fmt.stripHtml(no.toString()));
             }
+            // The two keys an answer is remembered by: the asking ability
+            // ({@code originalId}, absent on a mulligan and anything else with
+            // no source) and the question with the source's name replaced by
+            // {this}, so "always gain the life" can hold for this Soul's
+            // Attendant or for every card that asks it (docs/board-ui.md
+            // "Remembered answers"). The seat stores neither: choose_action's
+            // remember= hands them back to the engine's own memory.
+            Object originalId = options.get("originalId");
+            if (originalId != null) {
+                r.put("original_id", originalId.toString());
+            }
+            Object autoAnswer = options.get("autoAnswerMessage");
+            if (autoAnswer != null) {
+                r.put("auto_answer_text", Fmt.stripHtml(autoAnswer.toString()));
+            }
         }
         source(r, e, game);
         String msg = e.getMessage();
@@ -864,6 +879,13 @@ public final class DecisionRenderer {
             }
             if (choice.isSearchEnabled() && choices.size() > 12) {
                 r.put("searchable", true);
+            }
+            if (choice.isSpecialEnabled()) {
+                // The engine's own "Remember answer" on a list question — set
+                // only for the replacement-effect order, whose answer it keeps
+                // for the rest of the game (HumanPlayer.autoSelectReplacementEffects).
+                // Answered with remember= on choose_action (docs/engine.md).
+                r.put("remember_text", Fmt.stripHtml(choice.getSpecialText()));
             }
         }
         r.put("choices", choices);
