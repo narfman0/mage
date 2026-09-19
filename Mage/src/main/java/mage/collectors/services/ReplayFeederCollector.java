@@ -3,6 +3,7 @@ package mage.collectors.services;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import mage.constants.ManaType;
+import mage.constants.PlayerAction;
 import mage.MageObject;
 import mage.abilities.Ability;
 import mage.cards.Card;
@@ -173,13 +174,20 @@ public class ReplayFeederCollector extends EmptyDataCollector {
             diverge(r, "query type at seq " + gameSeq + " for " + player.getName() + ": recorded " + d.queryType() + ", live " + liveType);
             return;
         }
-        Runnable answer;
+        Runnable answered;
         try {
-            answer = responseFor(game, player, event, d);
+            answered = responseFor(game, player, event, d);
         } catch (IllegalStateException e) {
             diverge(r, e.getMessage());
             return;
         }
+        // The recorded answer may also have told the engine to answer this
+        // question itself from then on: apply that first, so the resumed game
+        // stops being asked exactly where the recorded one did.
+        Runnable answer = d.remember() == null ? answered : () -> {
+            applyRemember(game, player, event, d);
+            answered.run();
+        };
         r.fed++;
         r.feeder.submit(() -> {
             try {
@@ -252,6 +260,47 @@ public class ReplayFeederCollector extends EmptyDataCollector {
             }
             default:
                 throw new IllegalStateException("recorded response type '" + type + "' at seq " + d.seq() + " cannot be replayed");
+        }
+    }
+
+    /**
+     * "Always answer this the same way", as the recorded decision carried it
+     * ({@code response.remember}): a yes/no by the asking ability
+     * ({@code ability}) or by the question ({@code text}), a trigger ordered
+     * {@code first} or {@code last}. The key is built from the <em>live</em>
+     * query — an ability's id is new every game — so only the scope is
+     * recorded. A replacement effect's memory needs nothing here: its answer
+     * is the {@code #}-prefixed key, replayed as the string it is.
+     */
+    private static void applyRemember(Game game, Player player, PlayerQueryEvent event, ReplayScript.Decision d) {
+        String scope = d.remember();
+        if (event == null || scope == null) {
+            return;
+        }
+        // Into the new record too, like the answer itself, so a resumed game
+        // can be resumed again.
+        mage.collectors.DataCollectorServices.getInstance()
+                .onPlayerResponse(game, player.getId(), ServerGameEventLogCollector.REMEMBER, scope);
+        if ("ability".equals(scope) || "text".equals(scope)) {
+            Map<String, java.io.Serializable> options = event.getOptions();
+            Object text = options == null ? null : options.get("autoAnswerMessage");
+            Object originalId = options == null ? null : options.get("originalId");
+            if (text == null) {
+                return;
+            }
+            boolean yes = d.value() != null && d.value().getAsBoolean();
+            boolean byAbility = "ability".equals(scope) && originalId != null;
+            PlayerAction action = byAbility
+                    ? (yes ? PlayerAction.REQUEST_AUTO_ANSWER_ID_YES : PlayerAction.REQUEST_AUTO_ANSWER_ID_NO)
+                    : (yes ? PlayerAction.REQUEST_AUTO_ANSWER_TEXT_YES : PlayerAction.REQUEST_AUTO_ANSWER_TEXT_NO);
+            player.sendPlayerAction(action, game, byAbility ? originalId + "#" + text : String.valueOf(text));
+        } else if ("first".equals(scope) || "last".equals(scope)) {
+            UUID ability = resolveRecordedChoice(game, event, d);
+            if (ability != null) {
+                player.sendPlayerAction("first".equals(scope)
+                        ? PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_FIRST
+                        : PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_LAST, game, ability);
+            }
         }
     }
 

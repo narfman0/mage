@@ -201,6 +201,9 @@ public final class SeatHost {
                 if (args.get("full_control") != null) {
                     host.setFullControl(seat(args), Boolean.TRUE.equals(args.get("full_control")));
                 }
+                if (Boolean.TRUE.equals(args.get("forget_answers"))) {
+                    host.forgetAnswers(seat(args));
+                }
             }
             case "end_game" -> {
                 GameHost host = games.remove(String.valueOf(args.get("game_id")));
