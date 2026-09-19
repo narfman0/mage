@@ -83,24 +83,13 @@ class AminatouVeilPiercerEffect extends ContinuousEffectImpl {
             return false;
         }
         for (Card card : controller.getHand().getCards(filter, game)) {
-            grant(card, game);
-        }
-        // Miracle is checked as the card is drawn, before the next round of continuous effects has
-        // run, so the card must already carry the ability while it is the top of the library.
-        for (Card card : controller.getLibrary().getCards(game)) {
-            if (filter.match(card, game)) {
-                grant(card, game);
+            if (card.getManaCost().isEmpty()) {
+                continue;
             }
+            game.getState().addOtherAbility(
+                    card, new MiracleAbility(CardUtil.reduceCost(card.getManaCost(), 4).getText())
+            );
         }
         return true;
-    }
-
-    private static void grant(Card card, Game game) {
-        if (card.getManaCost().isEmpty()) {
-            return;
-        }
-        game.getState().addOtherAbility(
-                card, new MiracleAbility(CardUtil.reduceCost(card.getManaCost(), 4).getText())
-        );
     }
 }
