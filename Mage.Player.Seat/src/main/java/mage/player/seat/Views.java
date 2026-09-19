@@ -412,15 +412,21 @@ public final class Views {
     // ---- board ----------------------------------------------------------
 
     public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId) {
-        return players(gameView, myPlayerId, null);
+        return players(gameView, myPlayerId, null, Map.of());
+    }
+
+    public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId, Game game) {
+        return players(gameView, myPlayerId, game, Map.of());
     }
 
     /**
      * The players array. With the game, each seat's command zone is rendered
      * as cards (where the commander is, its cast count and tax, the damage it
-     * has dealt); without it, as names.
+     * has dealt); without it, as names. {@code unlit} is why each of the
+     * seat's own unplayable objects is unplayable ({@link Unlit}), empty
+     * anywhere but a priority window.
      */
-    public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId, Game game) {
+    public List<Map<String, Object>> players(GameView gameView, UUID myPlayerId, Game game, Map<UUID, Map<String, Object>> unlit) {
         List<Map<String, Object>> players = new ArrayList<>();
         List<PlayerView> ordered = game != null ? turnOrder(gameView, myPlayerId, game) : stablePlayers(gameView, myPlayerId);
         for (PlayerView player : ordered) {
@@ -470,6 +476,8 @@ public final class Views {
                     card.put("id", shortId(e.getKey()));
                     if (playable != null && playable.containsObject(e.getKey())) {
                         card.put("playable", true);
+                    } else if (unlit.containsKey(e.getKey())) {
+                        card.put("not_playable", unlit.get(e.getKey()));
                     }
                     hand.add(card);
                 }
@@ -480,7 +488,12 @@ public final class Views {
                 List<PermanentView> sorted = new ArrayList<>(player.getBattlefield().values());
                 sorted.sort(Comparator.<PermanentView, String>comparing(this::displayName).thenComparingInt(p -> sequence(p.getId())));
                 for (PermanentView perm : sorted) {
-                    battlefield.add(permanentInfo(perm, gameView));
+                    Map<String, Object> entry = permanentInfo(perm, gameView);
+                    Map<String, Object> why = unlit.get(perm.getId());
+                    if (why != null) {
+                        entry.put("not_playable", why);
+                    }
+                    battlefield.add(entry);
                 }
             }
             if (!battlefield.isEmpty()) {
