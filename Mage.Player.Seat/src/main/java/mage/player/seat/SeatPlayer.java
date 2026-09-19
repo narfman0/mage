@@ -64,7 +64,21 @@ public class SeatPlayer extends HumanPlayer {
 
     public SeatPlayer(String name, RangeOfInfluence range) {
         super(name, range, 0);
-        setUserData(UserData.getDefaultUserDataView());
+        UserData data = UserData.getDefaultUserDataView();
+        // HumanPlayer.priority passes an empty-stack window itself unless the
+        // step is one of the user's phase stops (checkPassStep), and the
+        // defaults are the two mains plus the combat steps — so the seat never
+        // saw a Begin Combat or End Turn window, and the product's own stops
+        // for them (a tapper's window; flash at their end step; "pass until
+        // X's end step") had nothing to act on (found 2026-09-19). Ask at
+        // both, either turn: the server decides what to pass (its stops are
+        // narrower than the engine's would be), and an empty window costs
+        // nothing. Upkeep, draw and end of combat stay the engine's to pass.
+        for (mage.players.net.SkipPrioritySteps turn : List.of(data.getUserSkipPrioritySteps().getYourTurn(), data.getUserSkipPrioritySteps().getOpponentTurn())) {
+            turn.setBeforeCombat(true);
+            turn.setEndOfTurn(true);
+        }
+        setUserData(data);
         setPassAfterOwnAction(true);
     }
 
