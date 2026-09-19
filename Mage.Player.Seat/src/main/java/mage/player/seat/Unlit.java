@@ -15,6 +15,7 @@ import mage.cards.ModalDoubleFacedCard;
 import mage.cards.SplitCard;
 import mage.cards.TransformingDoubleFacedCard;
 import mage.constants.AsThoughEffectType;
+import mage.constants.CommanderCardType;
 import mage.constants.SpellAbilityType;
 import mage.constants.TimingRule;
 import mage.constants.Zone;
@@ -77,10 +78,10 @@ public final class Unlit {
 
     /**
      * The seat's own unlit objects as {@code objectId -> {reason, ability?}}:
-     * every hand card, and every battlefield permanent with a non-mana
-     * activated ability, that {@code canPlayObjects} leaves out. {@code
-     * ability} names which ability the reason is about, and only when the
-     * object offered several.
+     * every hand card, every battlefield permanent with a non-mana activated
+     * ability, and every commander still in the command zone, that {@code
+     * canPlayObjects} leaves out. {@code ability} names which ability the
+     * reason is about, and only when the object offered several.
      */
     public static Map<UUID, Map<String, Object>> reasons(Game realGame, SeatPlayer player, GameView view) {
         Map<UUID, Map<String, Object>> out = new HashMap<>();
@@ -96,6 +97,18 @@ public final class Unlit {
             PlayerView myView = view.getMyPlayer();
             if (myView != null && myView.getBattlefield() != null) {
                 unlit.addAll(myView.getBattlefield().keySet());
+            }
+            // And a commander still in the command zone — the card a Commander
+            // player asks about most, and the one whose answer the tax is
+            // about (the ladder's costModification folds it in). The view's
+            // command zone is objects, not a hand, so the ids come from the game.
+            Player mine = realGame.getPlayer(player.getId());
+            if (mine != null) {
+                for (UUID id : realGame.getCommandersIds(mine, CommanderCardType.COMMANDER_OR_OATHBREAKER, false)) {
+                    if (realGame.getState().getZone(id) == Zone.COMMAND) {
+                        unlit.add(id);
+                    }
+                }
             }
             unlit.removeIf(id -> playable != null && playable.containsObject(id));
             if (unlit.isEmpty()) {
@@ -232,8 +245,17 @@ public final class Unlit {
         copy.adjustX(game);
         game.getContinuousEffects().costModification(copy, game);
 
-        // 1. Timing. A land is its own sentence: the drop is spent, or it isn't your main.
+        // 1. Timing. A land is its own sentence, and it does not go through
+        // sorcerySpeed(): playing one is a special action, so PlayLandAbility
+        // leaves ActivatedAbilityImpl's default INSTANT timing and makes the
+        // turn check inside its own canActivate. Ask it the way that ability
+        // does — the moment first, then the drop, because the drop only
+        // resets on your own untap (Turn.beginTurn), so a spent one is still
+        // spent on every opponent's turn and would say the wrong thing there.
         if (ability instanceof PlayLandAbility) {
+            if (!game.isActivePlayer(me) || !game.canPlaySorcery(me)) {
+                return new Reason(Stage.TIMING, "sorcery speed");
+            }
             Player player = game.getPlayer(me);
             if (player != null && player.getLandsPlayed() >= player.getLandsPerTurn()) {
                 return new Reason(Stage.TIMING, "land already played this turn");
