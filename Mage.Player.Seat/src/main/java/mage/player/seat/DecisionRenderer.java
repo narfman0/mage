@@ -210,13 +210,21 @@ public final class DecisionRenderer {
                 }
                 CardView cv = views.findCardView(objectId, view);
                 // The revealed top of a library (Courser's land drop, Bolas's
-                // Citadel's cast): a real play, from there.
-                boolean fromLibrary = cv != null && game.getState().getZone(objectId) == Zone.LIBRARY;
+                // Citadel's cast): a real play, from there. So is a card in the
+                // graveyard (flashback, escape, unearth, Muldrotha) or in exile (an
+                // adventure's creature, foretell, an impulse draw's "you may play
+                // it this turn"): a cast or a land play, from there, not a bare
+                // "activate" (the engine-vs-product pass, 2026-09-18).
+                Zone objectZone = game.getState().getZone(objectId);
+                boolean fromLibrary = cv != null && objectZone == Zone.LIBRARY;
+                boolean fromClosed = cv != null && (objectZone == Zone.GRAVEYARD || objectZone == Zone.EXILED);
                 Map<String, Object> c = new HashMap<>();
                 c.put("index", choices.size());
                 c.put("id", views.shortId(objectId));
                 if (fromLibrary) {
                     c.put("from", "library");
+                } else if (fromClosed) {
+                    c.put("from", objectZone == Zone.GRAVEYARD ? "graveyard" : "exile");
                 }
                 if (cv != null) {
                     c.put("name", views.displayName(cv));
@@ -250,7 +258,7 @@ public final class DecisionRenderer {
                         c.put("power", cv.getPower());
                         c.put("toughness", cv.getToughness());
                     }
-                } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null && !fromLibrary)
+                } else if (cv == null || (view.getMyHand().get(objectId) == null && view.getStack().get(objectId) == null && !fromLibrary && !fromClosed)
                         || (!stats.hasCast() && !stats.hasBasicPlay())) {
                     // Not castable or playable as a land from where it is — a hand
                     // card whose play is a granted ability (Satoru's ninjutsu on a
@@ -270,7 +278,19 @@ public final class DecisionRenderer {
                 } else {
                     c.put("action", cv.isLand() ? "land" : "cast");
                     String manaCost = cv.getManaCostStr();
-                    if (manaCost != null && !manaCost.isEmpty()) {
+                    // From the graveyard or exile the printed cost is rarely what is
+                    // paid: the way it is cast from there — "Flashback {2}{U}",
+                    // "Escape—{2}{B}{B}, Exile five other cards" — rides as `ability`
+                    // (the first non-mana, non-basic-cast play), in the cost's place.
+                    String how = fromClosed ? alternativeCast(abilityNames, manaNames) : null;
+                    if (fromClosed && how == null && asCard != null) {
+                        // The card's own cost: the view joins an adventure's two halves
+                        // ("{2}{R}{*}{1}{R}"), and from exile only the creature is cast.
+                        manaCost = asCard.getManaCost().getText();
+                    }
+                    if (how != null) {
+                        c.put("ability", how);
+                    } else if (manaCost != null && !manaCost.isEmpty()) {
                         c.put("mana_cost", manaCost);
                     }
                     if (cv.isCreature() && cv.getPower() != null) {
@@ -363,6 +383,21 @@ public final class DecisionRenderer {
         }
         r.put("response_type", "boolean");
         return List.of();
+    }
+
+    /**
+     * How a card is cast from a closed zone: the first playable ability that
+     * is neither a mana ability nor the plain "Cast X" — a flashback, escape
+     * or adventure-return line, as the engine names it (50 chars).
+     */
+    private static String alternativeCast(List<String> abilityNames, List<String> manaNames) {
+        Set<String> mana = new HashSet<>(manaNames);
+        for (String name : abilityNames) {
+            if (!mana.contains(name) && !name.startsWith("Cast ") && !name.startsWith("Play ")) {
+                return Fmt.stripHtml(name);
+            }
+        }
+        return null;
     }
 
     /**
