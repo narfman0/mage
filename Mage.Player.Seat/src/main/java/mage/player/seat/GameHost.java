@@ -798,7 +798,7 @@ public final class GameHost {
      * Off (the default), that window is passed by the engine itself.
      */
     public void setFullControl(String seatName, boolean enabled) {
-        seat(seatName).player.setPassAfterOwnAction(!enabled);
+        seat(seatName).player.setFullControl(enabled);
     }
 
     /** Ends the game (the engine tells the players) and waits briefly for the game thread. */
