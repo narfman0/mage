@@ -486,11 +486,13 @@ public final class Views {
             if (!battlefield.isEmpty()) {
                 info.put("battlefield", battlefield);
             }
-            List<Map<String, Object>> graveyard = zoneCards(player.getGraveyard());
+            // A card castable from the graveyard or exile is lit there like a hand card.
+            var playableNow = isMe ? gameView.getCanPlayObjects() : null;
+            List<Map<String, Object>> graveyard = zoneCards(player.getGraveyard(), playableNow);
             if (!graveyard.isEmpty()) {
                 info.put("graveyard", graveyard);
             }
-            List<Map<String, Object>> exile = zoneCards(player.getExile());
+            List<Map<String, Object>> exile = zoneCards(player.getExile(), playableNow);
             if (!exile.isEmpty()) {
                 info.put("exile", exile);
             }
@@ -751,7 +753,7 @@ public final class Views {
         return null;
     }
 
-    private List<Map<String, Object>> zoneCards(CardsView zone) {
+    private List<Map<String, Object>> zoneCards(CardsView zone, mage.players.PlayableObjectsList playable) {
         List<Map<String, Object>> out = new ArrayList<>();
         if (zone == null) {
             return out;
@@ -763,6 +765,9 @@ public final class Views {
             Map<String, Object> card = new HashMap<>();
             card.put("id", shortId(e.getKey()));
             card.put("name", displayName(e.getValue()));
+            if (playable != null && playable.containsObject(e.getKey())) {
+                card.put("playable", true);
+            }
             rulesAndHints(card, e.getValue().getRules());
             out.add(card);
         }
