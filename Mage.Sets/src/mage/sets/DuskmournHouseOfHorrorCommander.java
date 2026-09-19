@@ -22,6 +22,7 @@ public final class DuskmournHouseOfHorrorCommander extends ExpansionSet {
         cards.add(new SetCardInfo("Adarkar Wastes", 258, Rarity.RARE, mage.cards.a.AdarkarWastes.class));
         cards.add(new SetCardInfo("Aesi, Tyrant of Gyre Strait", 210, Rarity.MYTHIC, mage.cards.a.AesiTyrantOfGyreStrait.class));
         cards.add(new SetCardInfo("Aether Gale", 109, Rarity.RARE, mage.cards.a.AetherGale.class));
+        cards.add(new SetCardInfo("Aminatou, Veil Piercer", 1, Rarity.MYTHIC, mage.cards.a.AminatouVeilPiercer.class));
         cards.add(new SetCardInfo("Aminatou's Augury", 71, Rarity.RARE, mage.cards.a.AminatousAugury.class));
         cards.add(new SetCardInfo("Ancient Cellarspawn", 16, Rarity.RARE, mage.cards.a.AncientCellarspawn.class, NON_FULL_USE_VARIOUS));
         cards.add(new SetCardInfo("Ancient Cellarspawn", 47, Rarity.RARE, mage.cards.a.AncientCellarspawn.class, NON_FULL_USE_VARIOUS));
@@ -340,6 +341,7 @@ public final class DuskmournHouseOfHorrorCommander extends ExpansionSet {
         cards.add(new SetCardInfo("Whispersilk Cloak", 257, Rarity.UNCOMMON, mage.cards.w.WhispersilkCloak.class));
         cards.add(new SetCardInfo("Whisperwood Elemental", 204, Rarity.MYTHIC, mage.cards.w.WhisperwoodElemental.class));
         cards.add(new SetCardInfo("Wilderness Reclamation", 205, Rarity.UNCOMMON, mage.cards.w.WildernessReclamation.class));
+        cards.add(new SetCardInfo("Winter, Cynical Opportunist", 7, Rarity.MYTHIC, mage.cards.w.WinterCynicalOpportunist.class));
         cards.add(new SetCardInfo("Witch's Clinic", 325, Rarity.RARE, mage.cards.w.WitchsClinic.class));
         cards.add(new SetCardInfo("Woodland Cemetery", 326, Rarity.RARE, mage.cards.w.WoodlandCemetery.class));
         cards.add(new SetCardInfo("Worldspine Wurm", 206, Rarity.MYTHIC, mage.cards.w.WorldspineWurm.class));
