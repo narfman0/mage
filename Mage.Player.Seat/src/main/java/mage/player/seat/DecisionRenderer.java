@@ -133,7 +133,7 @@ public final class DecisionRenderer {
         r.putAll(situation(game, player, view));
         List<Object> backing = switch (e.getQueryType()) {
             case ASK -> ask(r, e, view, game);
-            case SELECT -> select(r, e, game, view, player.getId(), offerManaSources);
+            case SELECT -> select(r, e, game, view, player, offerManaSources);
             case PICK_TARGET -> target(r, e, game, view, player.getId());
             case PICK_ABILITY -> pickAbility(r, e, game, view, player.getId());
             case PLAY_MANA, PLAY_X_MANA -> mana(r, e, game, view, player.getId());
@@ -180,7 +180,8 @@ public final class DecisionRenderer {
     }
 
     @SuppressWarnings("unchecked")
-    private List<Object> select(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, UUID me, boolean offerManaSources) {
+    private List<Object> select(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, SeatPlayer player, boolean offerManaSources) {
+        UUID me = player.getId();
         r.put("action_type", "GAME_SELECT");
         List<Map<String, Object>> choices = new ArrayList<>();
         List<Object> backing = new ArrayList<>();
@@ -375,6 +376,12 @@ public final class DecisionRenderer {
         }
         if (options == null || (!options.containsKey("possibleAttackers") && !options.containsKey("possibleBlockers"))) {
             specialActions(choices, backing, game, me, false);
+            // XMage's UNDO is on: the state before this seat's mana tap is
+            // bookmarked until it passes, plays a land or completes a cast
+            // (GameHost.takeBack).
+            if (player.getStoredBookmark() != -1 && me.equals(game.getPriorityPlayerId())) {
+                r.put("can_take_back", true);
+            }
         }
         if (!choices.isEmpty()) {
             r.put("response_type", "select");
