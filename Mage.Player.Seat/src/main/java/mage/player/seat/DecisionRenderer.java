@@ -132,7 +132,7 @@ public final class DecisionRenderer {
         r.put("message", Fmt.stripHtml(e.getMessage()));
         r.putAll(situation(game, player, view));
         List<Object> backing = switch (e.getQueryType()) {
-            case ASK -> ask(r, e, view);
+            case ASK -> ask(r, e, view, game);
             case SELECT -> select(r, e, game, view, player.getId(), offerManaSources);
             case PICK_TARGET -> target(r, e, game, view, player.getId());
             case PICK_ABILITY -> pickAbility(r, e, game, view, player.getId());
@@ -153,7 +153,7 @@ public final class DecisionRenderer {
         return new Decision(seq, e, r, backing);
     }
 
-    private List<Object> ask(Map<String, Object> r, PlayerQueryEvent e, GameView view) {
+    private List<Object> ask(Map<String, Object> r, PlayerQueryEvent e, GameView view, Game game) {
         r.put("action_type", "GAME_ASK");
         r.put("response_type", "boolean");
         Map<String, Serializable> options = e.getOptions();
@@ -165,7 +165,7 @@ public final class DecisionRenderer {
                 r.put("no_text", Fmt.stripHtml(no.toString()));
             }
         }
-        source(r, e);
+        source(r, e, game);
         String msg = e.getMessage();
         if (msg != null && msg.toLowerCase().contains("mulligan") && view.getMyHand() != null && !view.getMyHand().isEmpty()) {
             List<CardView> hand = new ArrayList<>(view.getMyHand().values());
@@ -404,10 +404,22 @@ public final class DecisionRenderer {
         }
     }
 
-    /** The combat's defenders: each player, planeswalker and battle that can be attacked, as {id, name, kind}. */
+    /**
+     * The combat's defenders: each player, planeswalker and battle that can
+     * be attacked, as {id, name, kind} — players first, each group by name
+     * (the engine keeps them in a hash set, and the goldens compare the list).
+     */
     private List<Map<String, Object>> defenders(Game game, GameView view, UUID me) {
         List<Map<String, Object>> out = new ArrayList<>();
-        for (UUID id : game.getCombat().getDefenders()) {
+        List<UUID> ids = new ArrayList<>(game.getCombat().getDefenders());
+        ids.sort(Comparator.<UUID, Integer>comparing(id -> game.getPlayer(id) != null ? 0 : 1)
+                .thenComparing(id -> {
+                    mage.players.Player pl = game.getPlayer(id);
+                    Permanent pm = game.getPermanent(id);
+                    return pl != null ? pl.getName() : pm != null ? pm.getName() : "";
+                }, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(UUID::toString));
+        for (UUID id : ids) {
             Map<String, Object> d = new LinkedHashMap<>();
             d.put("id", views.shortId(id));
             mage.players.Player player = game.getPlayer(id);
@@ -487,7 +499,7 @@ public final class DecisionRenderer {
         }
         List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired());
         chosenSoFar(r, e);
-        source(r, e);
+        source(r, e, game);
         return backing;
     }
 
@@ -504,7 +516,7 @@ public final class DecisionRenderer {
      * {@code source: {name, id?}} — the id resolved from the log ref, so the
      * board can open the live card and glow its stack item.
      */
-    private void source(Map<String, Object> r, PlayerQueryEvent e) {
+    private void source(Map<String, Object> r, PlayerQueryEvent e, Game game) {
         Map<String, Serializable> options = e.getOptions();
         Object raw = options != null ? options.get("secondMessage") : null;
         if (raw == null) {
@@ -515,7 +527,9 @@ public final class DecisionRenderer {
         source.put("name", Fmt.stripHtml(text));
         java.util.regex.Matcher m = LOG_REF.matcher(text);
         if (m.find()) {
-            UUID id = views.byLogRef(m.group(1));
+            // The name beside the ref disambiguates a shared three-digit ref.
+            String name = Fmt.stripHtml(text.substring(0, m.start())).trim();
+            UUID id = views.byLogRef(m.group(1), name, game);
             if (id != null) {
                 source.put("id", views.shortId(id));
             }
