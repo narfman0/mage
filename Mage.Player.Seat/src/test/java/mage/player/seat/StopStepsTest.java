@@ -16,7 +16,8 @@ import java.util.Set;
  * passes a step itself unless it is one of the user's phase stops, and the
  * engine's defaults are the mains and the combat steps; the seat adds Begin
  * Combat and End Turn on either turn, so the product's stops for them can
- * act. Upkeep and draw stay the engine's to pass.
+ * act; upkeep and draw stay the engine's to pass. Under full control every
+ * step is a stop, so "asks at every window" is true of the engine too.
  */
 public class StopStepsTest {
 
@@ -31,11 +32,33 @@ public class StopStepsTest {
 
     @Test(timeout = 240_000)
     public void beginCombatAndEndTurnWindowsReachTheSeatOnEitherTurn() throws Exception {
-        GameHost host = new GameHost(new GameHost.Config("stopsteps", "duel", 5L, null,
+        Set<String> steps = windows("stopsteps", false);
+        for (String want : List.of("Begin Combat · mine", "Begin Combat · theirs", "End Turn · mine", "End Turn · theirs",
+                "Precombat Main · mine", "Declare Attackers · theirs")) {
+            Assert.assertTrue(want + " asked; saw " + steps, steps.contains(want));
+        }
+        for (String skipped : List.of("Upkeep · mine", "Upkeep · theirs", "Draw · mine", "End Combat · mine")) {
+            Assert.assertFalse(skipped + " stays the engine's to pass; saw " + steps, steps.contains(skipped));
+        }
+    }
+
+    @Test(timeout = 240_000)
+    public void fullControlReachesEveryWindow() throws Exception {
+        Set<String> steps = windows("fullcontrol", true);
+        for (String want : List.of("Upkeep · mine", "Upkeep · theirs", "Draw · mine", "Begin Combat · mine", "End Combat · theirs",
+                "End Turn · mine", "End Turn · theirs")) {
+            Assert.assertTrue(want + " asked under full control; saw " + steps, steps.contains(want));
+        }
+    }
+
+    /** The empty-stack priority windows the seat is asked at, as "Step · mine|theirs", to turn 8. */
+    private static Set<String> windows(String id, boolean fullControl) throws Exception {
+        GameHost host = new GameHost(new GameHost.Config(id, "duel", 5L, null,
                 List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)), false));
         ScriptedSeat script = new ScriptedSeat();
         Set<String> steps = new HashSet<>();
         try {
+            host.setFullControl("You", fullControl);
             host.start();
             for (int i = 0; i < 400; i++) {
                 Map<String, Object> d = host.awaitDecision("You", 120_000);
@@ -58,12 +81,6 @@ public class StopStepsTest {
         } finally {
             host.end();
         }
-        for (String want : List.of("Begin Combat · mine", "Begin Combat · theirs", "End Turn · mine", "End Turn · theirs",
-                "Precombat Main · mine", "Declare Attackers · theirs")) {
-            Assert.assertTrue(want + " asked; saw " + steps, steps.contains(want));
-        }
-        for (String skipped : List.of("Upkeep · mine", "Upkeep · theirs", "Draw · mine", "End Combat · mine")) {
-            Assert.assertFalse(skipped + " stays the engine's to pass; saw " + steps, steps.contains(skipped));
-        }
+        return steps;
     }
 }
