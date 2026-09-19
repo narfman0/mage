@@ -795,6 +795,11 @@ public abstract class PlayerImpl implements Player, Serializable {
             Card card = isDrawsFromBottom() ? getLibrary().drawFromBottom(game) : getLibrary().drawFromTop(game);
             if (card != null) {
                 card.moveToZone(Zone.HAND, source, game, false); // if you want to use event.getSourceId() here then thinks x10 times
+                // A zone change clears the abilities continuous effects granted to the card, so effects
+                // that give cards in a hand an ability (example: Aminatou, Veil Piercer granting miracle)
+                // must be re-applied before anything reads the drawn card's abilities — the miracle
+                // watcher does exactly that, on the event fired below.
+                game.applyEffects();
                 if (isTopCardRevealed() && !isDrawsFromBottom()) {
                     game.informPlayers(getLogName() + " draws a revealed card  (" + card.getLogName() + ')');
                 }
@@ -3309,6 +3314,29 @@ public abstract class PlayerImpl implements Player, Serializable {
                 .orElse(defaultChoice);
     }
 
+    /**
+     * Ask the rolling player which planar die result to ignore. A planar die has no lowest face,
+     * so the choice is the player's (AI keeps the most useful roll: chaos, then planar, then blank).
+     */
+    private PlanarDieRollResult choosePlanarRollToIgnore(Game game, List<Object> dieResults) {
+        List<PlanarDieRollResult> results = dieResults.stream()
+                .map(PlanarDieRollResult.class::cast)
+                .collect(Collectors.toList());
+        if (this.isComputer() || results.stream().distinct().count() == 1) {
+            return results.stream()
+                    .min(Comparator.comparingInt(PlanarDieRollResult::getAIPriority))
+                    .orElse(results.get(0));
+        }
+        Choice choice = new ChoiceImpl(true);
+        choice.setMessage("Choose which planar die roll result to ignore");
+        choice.setChoices(results.stream().sorted().map(Object::toString).collect(Collectors.toSet()));
+        this.choose(Outcome.Neutral, choice, game);
+        return results.stream()
+                .filter(r -> r.toString().equals(choice.getChoice()))
+                .findFirst()
+                .orElse(results.get(0));
+    }
+
     private Object rollDieInnerWithReplacement(Game game, Ability source, RollDieType rollDieType, int numSides, int numChaosSides, int numPlanarSides) {
         switch (rollDieType) {
 
@@ -3503,6 +3531,30 @@ public abstract class PlayerImpl implements Player, Serializable {
             }
             dieRolls.clear();
             dieRolls.addAll(newRolls);
+        } else if (rollDiceEvent.getRollDieType() == RollDieType.PLANAR && rollDiceEvent.getIgnoreLowestAmount() > 0) {
+            // 706.5 speaks of the lowest roll, which a planar die has no notion of, so an effect that
+            // ignores planar rolls (example: Ichor Elixir) lets the rolling player choose which to ignore.
+            List<PlanarDieRollResult> ignoredResults = new ArrayList<>();
+            for (int i = 0; i < rollDiceEvent.getIgnoreLowestAmount() && dieResults.size() > 1; i++) {
+                PlanarDieRollResult ignored = choosePlanarRollToIgnore(game, dieResults);
+                dieResults.remove(ignored);
+                ignoredResults.add(ignored);
+            }
+            ignoreMessage = String.format(
+                    ignoredResults.size() > 1 ? ", ignoring [%s]" : ", ignoring %s",
+                    ignoredResults.stream().map(Object::toString).collect(Collectors.joining(", "))
+            );
+            // remove ignored rolls (they not exist anymore)
+            List<RollDieResult> newRolls = new ArrayList<>();
+            for (RollDieResult rollDieResult : dieRolls) {
+                if (ignoredResults.contains(rollDieResult.getPlanarResult())) {
+                    ignoredResults.remove(rollDieResult.getPlanarResult());
+                } else {
+                    newRolls.add(rollDieResult);
+                }
+            }
+            dieRolls.clear();
+            dieRolls.addAll(newRolls);
         } else {
             ignoreMessage = "";
         }
@@ -3533,9 +3585,10 @@ public abstract class PlayerImpl implements Player, Serializable {
                 break;
             case PLANAR:
                 // [Roll a planar die] user rolled CHAOS (source: xxx)
-                message = String.format("[Roll a planar die] %s rolled %s%s",
+                message = String.format("[Roll a planar die] %s rolled %s%s%s",
                         getLogName(),
                         dieResults.size() > 1 ? '[' + resultString + ']' : resultString,
+                        ignoreMessage,
                         CardUtil.getSourceLogName(game, source));
                 break;
         }
