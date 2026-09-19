@@ -188,6 +188,7 @@ public final class SeatHost {
             case "choose_action" -> r.putAll(game(args).chooseAction(seat(args), args));
             case "state" -> r.putAll(game(args).state(seat(args)));
             case "rollback" -> r.put("success", game(args).rollback(seat(args), ((Number) args.getOrDefault("turns", 0)).intValue()));
+            case "take_back" -> r.putAll(game(args).takeBack(seat(args)));
             case "concede" -> game(args).concede(seat(args));
             case "set" -> {
                 GameHost host = game(args);

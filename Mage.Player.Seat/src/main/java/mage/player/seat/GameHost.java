@@ -739,6 +739,37 @@ public final class GameHost {
         return true;
     }
 
+    /**
+     * Take back the mana the seat tapped at this priority window: XMage's
+     * own UNDO. PlayerImpl bookmarks the state before a mana ability whose
+     * undo is possible and {@code GameImpl.undo} restores it while the
+     * bookmark stands — until the player passes priority, plays a land, or
+     * completes a cast or activation (each resets it: in this XMage a spell
+     * on the stack is not undone, only backed out of mid-payment, which is
+     * the mana prompt's Cancel). So this is "untap what I tapped": the
+     * misclicked land, the mana floated for a spell then thought better
+     * of. The question the seat holds is the same priority window; it is
+     * rendered again over the restored state.
+     */
+    public Map<String, Object> takeBack(String seatName) {
+        Seat seat = seat(seatName);
+        synchronized (seat) {
+            Decision d = seat.pending();
+            if (d == null || !"GAME_SELECT".equals(d.actionType()) || d.combatPhase() != null) {
+                return error("no_take_back", "Nothing to take back: not at a priority window", false);
+            }
+            if (seat.player.getStoredBookmark() == -1 || !seat.player.getId().equals(game.getPriorityPlayerId())) {
+                return error("no_take_back", "Nothing to take back", false);
+            }
+            game.undo(seat.player.getId());
+            game.informPlayers(seat.player.getLogName() + " takes back the mana they tapped");
+            seat.deliver(renderer.render(game, seat.player, d.event, d.seq, seat.offerManaSources));
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("success", true);
+            return r;
+        }
+    }
+
     public void concede(String seatName) {
         Seat seat = seat(seatName);
         game.informPlayers(seat.player.getLogName() + " wants to concede");
