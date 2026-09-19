@@ -53,6 +53,8 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
     private static final Logger logger = Logger.getLogger(ServerGameEventLogCollector.class);
     public static final String SERVICE_CODE = "serverGameEventLog";
     private static final String FILE_NAME = "server_game_events.jsonl";
+    /** The pseudo response type an "always answer this the same way" arrives as. */
+    public static final String REMEMBER = "remember";
 
     // Per-game writer, synchronized for thread safety between game thread and network thread
     private final Map<UUID, GameEventLogger> loggers = new ConcurrentHashMap<>();
@@ -181,6 +183,16 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
             return;
         }
 
+        if (REMEMBER.equals(responseType)) {
+            // Not an answer: the player is telling the engine to answer this
+            // question itself from now on ("always answer this the same way").
+            // It rides on the answer that follows, so a resumed game can apply
+            // it at the same decision and go on not being asked.
+            if (data != null) {
+                gel.pendingRemember.put(playerId, String.valueOf(data));
+            }
+            return;
+        }
         PendingQuery pending = gel.consumePendingQuery(playerId);
         if (pending == null) {
             // Response without a pending query — can happen for computer players
@@ -209,6 +221,10 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
 
         // Build response structure
         Map<String, Object> response = buildResponse(game, responseType, data, pending);
+        String remember = gel.pendingRemember.remove(playerId);
+        if (remember != null) {
+            response.put("remember", remember);
+        }
         event.put("response", response);
 
         gel.writeLine(toJson(event));
@@ -545,6 +561,8 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
         private BufferedWriter writer;
         // Pending queries per player (game thread writes, network thread reads)
         private final Map<UUID, PendingQuery> pendingQueries = new ConcurrentHashMap<>();
+        // An "always answer this" sent just before its answer, per player.
+        private final Map<UUID, String> pendingRemember = new ConcurrentHashMap<>();
         // Phase tracking for phase_change events
         int lastTurn = -1;
         TurnPhase lastPhase = null;
