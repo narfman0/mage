@@ -10,7 +10,8 @@ import java.util.Optional;
 /**
  * @author TheElk801
  */
-public abstract class VillainousChoice {
+// Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+public abstract class VillainousChoice implements java.io.Serializable {
 
     private final String rule;
     private final String message;

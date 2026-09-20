@@ -22,7 +22,8 @@ import java.util.stream.Collectors;
 /**
  * @author TheElk801
  */
-public class BeholdType {
+// Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+public class BeholdType implements java.io.Serializable {
 
     private static Map<SubType, BeholdType> typeMap = new HashMap<>();
 
