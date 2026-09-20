@@ -16,6 +16,25 @@ public class AddCreatureSubTypeAllMultiZoneEffect extends ModifyObjectAllMultiZo
     private final FilterOwnedCreatureCard filterCard;
     private final SubType chosenType;
 
+    /**
+     * The modifier as a returned lambda, not a conditional-expression operand:
+     * javac only compiles a lambda as serializable when its target type is
+     * Serializable at the lambda itself, and a game is snapshotted whole for
+     * resume (fullpod docs/save-resume.md).
+     */
+    private static ObjectModifier modifier(SubType chosenType) {
+        if (chosenType == null) {
+            return (obj, source, game) -> {
+                Optional.ofNullable(
+                    ChooseCreatureTypeEffect.getChosenCreatureType(source.getSourceId(), game)
+                ).ifPresent(type -> {
+                    game.getState().getCreateMageObjectAttribute(obj, game).getSubtype().add(type);
+                });
+            };
+        }
+        return (obj, source, game) -> { game.getState().getCreateMageObjectAttribute(obj, game).getSubtype().add(chosenType); };
+    }
+
     public AddCreatureSubTypeAllMultiZoneEffect() {
         this((SubType)null);
     }
@@ -43,16 +62,7 @@ public class AddCreatureSubTypeAllMultiZoneEffect extends ModifyObjectAllMultiZo
             FilterOwnedCreatureCard filterCard,
             SubType chosenType
     ) {
-        super(filterPermanent, filterSpell, filterCard,
-            chosenType == null ?
-                (obj, source, game) -> {
-                    Optional.ofNullable(
-                        ChooseCreatureTypeEffect.getChosenCreatureType(source.getSourceId(), game)
-                    ).ifPresent(type -> {
-                        game.getState().getCreateMageObjectAttribute(obj, game).getSubtype().add(type);
-                    });
-                } :
-                (obj, source, game) -> { game.getState().getCreateMageObjectAttribute(obj, game).getSubtype().add(chosenType); },
+        super(filterPermanent, filterSpell, filterCard, modifier(chosenType),
             (chosenType == null ? "the chosen type" : chosenType.getPluralName()) + " in addition to their other types"
         );
 

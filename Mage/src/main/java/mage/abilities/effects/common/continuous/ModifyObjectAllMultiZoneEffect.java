@@ -25,7 +25,8 @@ import java.util.stream.Collectors;
 
 public class ModifyObjectAllMultiZoneEffect extends ContinuousEffectImpl {
     @FunctionalInterface
-    public interface ObjectModifier {
+    // Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+    public interface ObjectModifier extends java.io.Serializable {
         void modify(MageObject obj, Ability source, Game game);
     }
 

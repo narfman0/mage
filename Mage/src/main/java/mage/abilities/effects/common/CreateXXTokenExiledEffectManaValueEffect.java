@@ -21,9 +21,13 @@ import java.util.function.Function;
  */
 public class CreateXXTokenExiledEffectManaValueEffect extends OneShotEffect {
 
-    private final Function<Integer, Token> tokenMaker;
+    // Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+    public interface TokenMaker extends Function<Integer, Token>, java.io.Serializable {
+    }
 
-    public CreateXXTokenExiledEffectManaValueEffect(Function<Integer, Token> tokenMaker, String description) {
+    private final TokenMaker tokenMaker;
+
+    public CreateXXTokenExiledEffectManaValueEffect(TokenMaker tokenMaker, String description) {
         super(Outcome.Benefit);
         this.tokenMaker = tokenMaker;
         staticText = "the exiled card's owner creates an X/X " + description +
