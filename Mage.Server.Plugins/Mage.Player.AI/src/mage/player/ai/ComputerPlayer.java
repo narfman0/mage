@@ -70,16 +70,24 @@ public class ComputerPlayer extends PlayerImpl {
 
 
     // remember picked cards for better draft choices
-    private final transient List<PickedCard> pickedCards = new ArrayList<>();
-    private final transient List<ColoredManaSymbol> chosenColors = new ArrayList<>();
+    private transient List<PickedCard> pickedCards = new ArrayList<>();
+    private transient List<ColoredManaSymbol> chosenColors = new ArrayList<>();
 
     // keep current paying cost info for choose dialogs
     // mana abilities must ask payment too, so keep full chain
     // TODO: make sure it thread safe for AI simulations (all transient fields above and bottom)
-    private final transient Map<UUID, ManaCost> lastUnpaidMana = new LinkedHashMap<>();
+    private transient Map<UUID, ManaCost> lastUnpaidMana = new LinkedHashMap<>();
 
     // For stopping infinite loops when trying to pay Phyrexian mana when the player can't spend life and no other sources are available
     private transient boolean alreadyTryingToPayPhyrexian;
+
+    /** A player read back from a serialized game (a snapshot resume): the transient scratch lists start empty. */
+    private void readObject(java.io.ObjectInputStream in) throws java.io.IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        pickedCards = new ArrayList<>();
+        chosenColors = new ArrayList<>();
+        lastUnpaidMana = new LinkedHashMap<>();
+    }
 
     public ComputerPlayer(String name, RangeOfInfluence range) {
         super(name, range);

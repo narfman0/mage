@@ -9,7 +9,8 @@ import mage.players.Player;
 /**
  * @author TheElk801
  */
-public class FaceVillainousChoice {
+// Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+public class FaceVillainousChoice implements java.io.Serializable {
 
     private final Outcome outcome;
     private final VillainousChoice firstChoice;

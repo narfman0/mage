@@ -168,15 +168,16 @@ public abstract class GameImpl implements Game {
     private transient int infiniteLoopCounter; // used to check if the game is in an infinite loop
     private transient int lastNumberOfAbilitiesOnTheStack; // used to check how long no new ability was put to stack
     private transient List<Integer> lastPlayersLifes = null; // if life is going down, it's no infinite loop
-    private transient final LinkedList<UUID> stackObjectsCheck = new LinkedList<>(); // used to check if different sources used the stack
+    private transient LinkedList<UUID> stackObjectsCheck = new LinkedList<>(); // used to check if different sources used the stack
 
     // temporary store for income concede commands, don't copy
     private final LinkedList<UUID> concedingPlayers = new LinkedList<>();
 
     // Server-side game event log: monotonic sequence counter and shared short ID registry.
     // Copies keep the current seq value but must not share the mutable counter; short IDs are game-lifetime singletons.
-    private transient AtomicInteger gameSeq;
-    private transient ShortIdRegistry shortIdRegistry;
+    // Both are serialized with the game: a snapshot resumed in another JVM keeps its seqs and short ids.
+    private AtomicInteger gameSeq;
+    private ShortIdRegistry shortIdRegistry;
 
     // Bridge event log: structured action events for MCP clients.
 
@@ -3740,6 +3741,10 @@ public abstract class GameImpl implements Game {
         tableEventSource = new TableEventSource();
         playerQueryEventSource = new PlayerQueryEventSource();
         gameStates = new GameStates();
+        // A resumed game (mage.player.seat.Snapshot) plays on from here: the
+        // rollback copies start over and the loop check starts empty.
+        gameStatesRollBack = new HashMap<>();
+        stackObjectsCheck = new LinkedList<>();
     }
 
     /**

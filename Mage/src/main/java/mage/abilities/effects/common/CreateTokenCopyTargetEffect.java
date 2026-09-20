@@ -32,7 +32,8 @@ import java.util.stream.Collectors;
 public class CreateTokenCopyTargetEffect extends OneShotEffect {
 
     @FunctionalInterface
-    public interface PermanentModifier {
+    // Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+    public interface PermanentModifier extends java.io.Serializable {
         void apply(Token token);
     }
 

@@ -32,7 +32,9 @@ import java.util.stream.Collectors;
  * Thread-safe: uses ConcurrentHashMap and AtomicInteger for safe access from
  * game thread (query events) and network thread (response events).
  */
-public class ShortIdRegistry {
+public class ShortIdRegistry implements java.io.Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private static final Logger logger = Logger.getLogger(ShortIdRegistry.class.getName());
 
