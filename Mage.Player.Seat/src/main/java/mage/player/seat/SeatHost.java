@@ -33,7 +33,7 @@ import java.util.concurrent.Executors;
  * next_decision that blocks for one seat never holds up another.
  *
  * Commands: ping, create_game, next_decision, choose_action, state, rollback,
- * concede, set, end_game. See docs/rearch.md in fullpod for the shapes.
+ * concede, set, snapshot, end_game. See docs/engine.md in fullpod for the shapes.
  */
 public final class SeatHost {
 
@@ -174,12 +174,19 @@ public final class SeatHost {
                         args.get("replay_from") == null ? null : String.valueOf(args.get("replay_from")),
                         args.get("hold_through_seq") == null ? 0 : ((Number) args.get("hold_through_seq")).intValue(),
                         args.get("free_mulligans") == null ? 0 : ((Number) args.get("free_mulligans")).intValue(),
-                        args.get("starting_player") == null ? "host" : String.valueOf(args.get("starting_player")));
+                        args.get("starting_player") == null ? "host" : String.valueOf(args.get("starting_player")),
+                        args.get("snapshot_from") == null ? null : String.valueOf(args.get("snapshot_from")),
+                        Boolean.TRUE.equals(args.get("snapshot")));
                 GameHost host = new GameHost(cfg);
                 games.put(gameId, host);
                 host.start();
                 r.put("game_id", gameId);
                 r.put("seats", host.seatNames());
+                r.put("resumed", host.resumed());
+                if (host.resumed()) {
+                    r.put("turn", host.game().getTurnNum());
+                    r.put("swapped", host.swapped());
+                }
             }
             case "next_decision" -> {
                 long timeout = args.get("timeout_ms") == null ? 30_000 : ((Number) args.get("timeout_ms")).longValue();
@@ -190,6 +197,7 @@ public final class SeatHost {
             case "rollback" -> r.put("success", game(args).rollback(seat(args), ((Number) args.getOrDefault("turns", 0)).intValue()));
             case "take_back" -> r.putAll(game(args).takeBack(seat(args)));
             case "concede" -> game(args).concede(seat(args));
+            case "snapshot" -> r.putAll(Boolean.TRUE.equals(args.get("now")) ? game(args).snapshotNow() : game(args).snapshotStatus());
             case "set" -> {
                 GameHost host = game(args);
                 if (args.get("offer_mana_sources") != null) {

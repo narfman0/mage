@@ -426,7 +426,7 @@ public final class DecisionRenderer {
      * A SELECT window that is priority, not a combat declaration: the engine
      * marks the combat ones with the creatures they offer.
      */
-    private static boolean isPriorityWindow(PlayerQueryEvent e) {
+    static boolean isPriorityWindow(PlayerQueryEvent e) {
         Map<String, Serializable> options = e.getOptions();
         return options == null
                 || (!options.containsKey("possibleAttackers") && !options.containsKey("possibleBlockers"));

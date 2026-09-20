@@ -21,7 +21,9 @@ import mage.game.events.TableEvent;
 import mage.game.match.Match;
 import mage.game.match.MatchOptions;
 import mage.game.mulligan.MulliganType;
+import mage.player.ai.ComputerPlayer;
 import mage.player.ai.ComputerPlayer7;
+import mage.players.PlayerImpl;
 import mage.players.Player;
 import org.apache.log4j.Logger;
 
@@ -66,7 +68,12 @@ public final class GameHost {
      */
     public record Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats,
                          boolean offerManaSources, String replayFrom, int holdThroughSeq,
-                         int freeMulligans, String startingPlayer) {
+                         int freeMulligans, String startingPlayer,
+                         // Snapshot resume (Snapshot): load this file instead of building a
+                         // game — every seat keeps its state, a `seat` spec over a CPU
+                         // player takes it over — and, with `snapshot`, keep
+                         // <gameLogDir>/snapshot.bin current at every top-level question.
+                         String snapshotFrom, boolean snapshot) {
         public Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats, boolean offerManaSources) {
             this(gameId, format, seed, gameLogDir, seats, offerManaSources, null, 0);
         }
@@ -74,6 +81,12 @@ public final class GameHost {
         public Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats,
                       boolean offerManaSources, String replayFrom, int holdThroughSeq) {
             this(gameId, format, seed, gameLogDir, seats, offerManaSources, replayFrom, holdThroughSeq, 0, "host");
+        }
+
+        public Config(String gameId, String format, Long seed, String gameLogDir, List<SeatSpec> seats,
+                      boolean offerManaSources, String replayFrom, int holdThroughSeq,
+                      int freeMulligans, String startingPlayer) {
+            this(gameId, format, seed, gameLogDir, seats, offerManaSources, replayFrom, holdThroughSeq, freeMulligans, startingPlayer, null, false);
         }
     }
 
@@ -94,6 +107,23 @@ public final class GameHost {
     });
     private Thread gameThread;
     private volatile Throwable gameError;
+    // Snapshot resume (Snapshot). The game thread is parked inside HumanPlayer
+    // while a question is open; a snapshot is written then, under a lock every
+    // answer (and rollback, take-back, concede, end) takes too, so nothing
+    // wakes the game thread while the state is being written.
+    private final Object gameLock = new Object();
+    private final java.nio.file.Path snapshotPath;
+    private final boolean resumed;
+    private final List<String> swapped = new ArrayList<>();
+    private final ExecutorService snapshots = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "seat-snapshot");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile int snapshotSeq = -1;
+    private volatile long snapshotBytes;
+    private volatile long snapshotMs;
+    private volatile String snapshotError;
 
     /** Once per JVM: the data collectors, so decisions land in server_game_events.jsonl when a game has a log dir. */
     public static synchronized void initCollectors() {
@@ -104,15 +134,33 @@ public final class GameHost {
         this.config = config;
         initCollectors();
         boolean commander = "commander".equals(config.format());
+        RangeOfInfluence range = commander ? RangeOfInfluence.ALL : RangeOfInfluence.ONE;
+        resumed = config.snapshotFrom() != null;
+        game = resumed ? adopt(Snapshot.read(java.nio.file.Path.of(config.snapshotFrom()))) : build(commander, range);
+        views = new Views(game.getShortIdRegistry());
+        renderer = new DecisionRenderer(views);
+        snapshotPath = config.snapshot() && config.gameLogDir() != null
+                ? java.nio.file.Path.of(config.gameLogDir(), Snapshot.FILE) : null;
+        game.addTableEventListener(event -> {
+            if (event.getEventType() == TableEvent.EventType.INFO && event.getMessage() != null) {
+                logLines.add(event.getMessage());
+            }
+        });
+        game.addPlayerQueryEventListener(this::onQuery);
+    }
+
+    /** A new game the way XMage's own tests make one: players and decks added, a match for the AI's simulations. */
+    private Game build(boolean commander, RangeOfInfluence range) throws Exception {
+        Game g;
         Match match;
         // London mulligan (XMage's GAME_DEFAULT) with the table's free count.
         int free = Math.max(0, config.freeMulligans());
         if (commander) {
-            game = new CommanderFreeForAll(MultiplayerAttackOption.MULTIPLE, RangeOfInfluence.ALL,
+            g = new CommanderFreeForAll(MultiplayerAttackOption.MULTIPLE, RangeOfInfluence.ALL,
                     MulliganType.GAME_DEFAULT.getMulligan(free), 40, 7);
             match = new CommanderFreeForAllMatch(new MatchOptions(config.gameId(), "Commander Free For All", true));
         } else {
-            game = new TwoPlayerDuel(MultiplayerAttackOption.LEFT, RangeOfInfluence.ONE,
+            g = new TwoPlayerDuel(MultiplayerAttackOption.LEFT, RangeOfInfluence.ONE,
                     MulliganType.GAME_DEFAULT.getMulligan(free), 60, 20, 7);
             match = new TwoPlayerMatch(new MatchOptions(config.gameId(), "Two Player Duel", false));
         }
@@ -125,10 +173,7 @@ public final class GameHost {
             case "random" -> GameOptions.StartingPlayer.RANDOM;
             default -> GameOptions.StartingPlayer.CHOOSE;
         };
-        game.setGameOptions(options);
-        views = new Views(game.getShortIdRegistry());
-        renderer = new DecisionRenderer(views);
-        RangeOfInfluence range = commander ? RangeOfInfluence.ALL : RangeOfInfluence.ONE;
+        g.setGameOptions(options);
         for (SeatSpec spec : config.seats()) {
             Player player;
             if ("cpu".equals(spec.kind())) {
@@ -143,27 +188,79 @@ public final class GameHost {
             }
             DeckCardLists list = DeckImporter.importDeckFromFile(spec.deck(), true);
             Deck deck = Deck.load(list, false, false, null);
-            game.loadCards(deck.getCards(), player.getId());
-            game.loadCards(deck.getSideboard(), player.getId());
-            game.addPlayer(player, deck);
+            g.loadCards(deck.getCards(), player.getId());
+            g.loadCards(deck.getSideboard(), player.getId());
+            g.addPlayer(player, deck);
             match.addPlayer(player, deck);
             players.add(player);
             // Short ids in a fixed order (seat order, then the decklist's order) so
             // a card is the same "p12" in the game and in its resumed replay,
             // whatever is rendered first.
             for (Card card : deck.getCards()) {
-                game.getShortIdRegistry().getOrAssign(card.getId());
+                g.getShortIdRegistry().getOrAssign(card.getId());
             }
             for (Card card : deck.getSideboard()) {
-                game.getShortIdRegistry().getOrAssign(card.getId());
+                g.getShortIdRegistry().getOrAssign(card.getId());
             }
         }
-        game.addTableEventListener(event -> {
-            if (event.getEventType() == TableEvent.EventType.INFO && event.getMessage() != null) {
-                logLines.add(event.getMessage());
+        return g;
+    }
+
+    /**
+     * A game read back from a snapshot: its players are the seats. Every
+     * player in the snapshot needs a spec of the same name; a `seat` spec
+     * over a CPU player takes it over (SeatPlayer(PlayerImpl) — same id,
+     * same state), and a `cpu` spec over a seat is refused (a person's
+     * questions can't be handed to the CPU mid-game).
+     */
+    private Game adopt(Game g) {
+        g.getOptions().gameLogDir = config.gameLogDir();
+        g.getOptions().replayFrom = null;
+        Map<String, Player> byName = new LinkedHashMap<>();
+        for (Player p : g.getPlayers().values()) {
+            byName.put(p.getName(), p);
+        }
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (SeatSpec spec : config.seats()) {
+            Player p = byName.get(spec.name());
+            if (p == null) {
+                throw new IllegalArgumentException("the snapshot has no player named " + spec.name() + " (it has " + byName.keySet() + ")");
             }
-        });
-        game.addPlayerQueryEventListener(this::onQuery);
+            seen.add(spec.name());
+            if ("cpu".equals(spec.kind())) {
+                if (!(p instanceof ComputerPlayer)) {
+                    throw new IllegalArgumentException(spec.name() + " was a seat in the snapshot; it can't become the CPU");
+                }
+                continue;
+            }
+            SeatPlayer seat;
+            if (p instanceof SeatPlayer sp) {
+                seat = sp;
+            } else {
+                seat = new SeatPlayer((PlayerImpl) p);
+                g.getState().getPlayers().put(seat.getId(), seat);
+                swapped.add(spec.name());
+            }
+            seat.setAskWhenAmbiguous(config.offerManaSources());
+            Seat s = new Seat(spec.name(), seat, config.offerManaSources());
+            seatsById.put(seat.getId(), s);
+            seatsByName.put(spec.name(), s);
+        }
+        if (!seen.containsAll(byName.keySet())) {
+            throw new IllegalArgumentException("every player in the snapshot needs a seat: " + byName.keySet() + ", given " + seen);
+        }
+        players.addAll(g.getPlayers().values());
+        return g;
+    }
+
+    /** Whether this game was read back from a snapshot (start() resumes it). */
+    public boolean resumed() {
+        return resumed;
+    }
+
+    /** Seats that were the CPU's in the snapshot and are a seat's now. */
+    public List<String> swapped() {
+        return List.copyOf(swapped);
     }
 
     public Game game() {
@@ -191,7 +288,15 @@ public final class GameHost {
         UUID chooser = "host".equals(String.valueOf(config.startingPlayer())) ? players.get(0).getId() : null;
         gameThread = new Thread(() -> {
             try {
-                game.start(chooser);
+                if (resumed) {
+                    // What GameImpl.start would have done for the collectors: open
+                    // this session's record (game_start names the players), then
+                    // play on from the snapshot's turn, phase and step (Turn.resumePlay).
+                    DataCollectorServices.getInstance().onGameStart(game);
+                    game.resume();
+                } else {
+                    game.start(chooser);
+                }
             } catch (Throwable t) {
                 gameError = t;
                 LOG.error("game thread died: " + config.gameId(), t);
@@ -247,6 +352,7 @@ public final class GameHost {
             r.put("error", "render failed: " + ex);
             seat.deliver(new Decision(seq, e, r, List.of()));
         }
+        maybeSnapshot(e);
     }
 
     /**
@@ -357,28 +463,38 @@ public final class GameHost {
     // ---- responses (never on the game thread) -----------------------------
 
     private void respondUuid(Seat seat, UUID id) {
-        DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "uuid", id);
-        seat.player.setResponseUUID(id);
+        synchronized (gameLock) {
+            DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "uuid", id);
+            seat.player.setResponseUUID(id);
+        }
     }
 
     private void respondBoolean(Seat seat, boolean value) {
-        DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "boolean", value);
-        seat.player.setResponseBoolean(value);
+        synchronized (gameLock) {
+            DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "boolean", value);
+            seat.player.setResponseBoolean(value);
+        }
     }
 
     private void respondString(Seat seat, String value) {
-        DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "string", value);
-        seat.player.setResponseString(value);
+        synchronized (gameLock) {
+            DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "string", value);
+            seat.player.setResponseString(value);
+        }
     }
 
     private void respondInteger(Seat seat, int value) {
-        DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "integer", value);
-        seat.player.setResponseInteger(value);
+        synchronized (gameLock) {
+            DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "integer", value);
+            seat.player.setResponseInteger(value);
+        }
     }
 
     private void respondManaType(Seat seat, ManaType type) {
-        DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "manaType", type);
-        seat.player.setResponseManaType(seat.player.getId(), type);
+        synchronized (gameLock) {
+            DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "manaType", type);
+            seat.player.setResponseManaType(seat.player.getId(), type);
+        }
     }
 
     // ---- the host API ------------------------------------------------------
@@ -457,6 +573,9 @@ public final class GameHost {
         if (gameError != null) {
             r.put("error", "game thread died: " + gameError);
         }
+        if (snapshotPath != null && snapshotError != null) {
+            r.put("snapshot_error", snapshotError); // the product says so on the stream: a resume would be refused
+        }
     }
 
     /** The board as the seat sees it right now, without a question. */
@@ -465,6 +584,9 @@ public final class GameHost {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("action_pending", seat.pending() != null);
         r.put("game_seq", game.getGameSeq());
+        if (snapshotPath != null) {
+            r.put("snapshot", snapshotStatus());
+        }
         try {
             r.putAll(renderer.situation(game, seat.player, renderer.viewFor(game, seat.player)));
         } catch (RuntimeException ex) {
@@ -844,7 +966,9 @@ public final class GameHost {
         }
         Decision stale = seat.pending();
         seat.batch.clear();
-        game.rollbackTurns(turns);
+        synchronized (gameLock) {
+            game.rollbackTurns(turns);
+        }
         seat.clearPending(stale);
         return true;
     }
@@ -871,9 +995,11 @@ public final class GameHost {
             if (seat.player.getStoredBookmark() == -1 || !seat.player.getId().equals(game.getPriorityPlayerId())) {
                 return error("no_take_back", "Nothing to take back", false);
             }
-            game.undo(seat.player.getId());
-            game.informPlayers(seat.player.getLogName() + " takes back the mana they tapped");
-            seat.deliver(renderer.render(game, seat.player, d.event, d.seq, seat.offerManaSources));
+            synchronized (gameLock) {
+                game.undo(seat.player.getId());
+                game.informPlayers(seat.player.getLogName() + " takes back the mana they tapped");
+                seat.deliver(renderer.render(game, seat.player, d.event, d.seq, seat.offerManaSources));
+            }
             Map<String, Object> r = new LinkedHashMap<>();
             r.put("success", true);
             return r;
@@ -883,7 +1009,9 @@ public final class GameHost {
     public void concede(String seatName) {
         Seat seat = seat(seatName);
         game.informPlayers(seat.player.getLogName() + " wants to concede");
-        game.setConcedingPlayer(seat.player.getId());
+        synchronized (gameLock) {
+            game.setConcedingPlayer(seat.player.getId());
+        }
     }
 
     /**
@@ -926,9 +1054,12 @@ public final class GameHost {
 
     /** Ends the game (the engine tells the players) and waits briefly for the game thread. */
     public void end() {
-        if (!game.hasEnded()) {
-            game.end();
+        synchronized (gameLock) {
+            if (!game.hasEnded()) {
+                game.end();
+            }
         }
+        snapshots.shutdown();
         try {
             if (gameThread != null) {
                 gameThread.join(5_000);
@@ -942,6 +1073,102 @@ public final class GameHost {
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    // ---- snapshots ---------------------------------------------------------
+
+    /**
+     * Snapshot policy: after a top-level question — priority, or a combat
+     * declaration — is delivered, write the game. Those are the questions
+     * the turn loop asks again when the step is re-entered
+     * (Phase.resumeStep); a question nested in a cast, a payment or a
+     * resolution is not, so a snapshot there would resume a half-done
+     * action. Before the first turn (mulligans) nothing is written either.
+     */
+    private void maybeSnapshot(PlayerQueryEvent e) {
+        if (snapshotPath == null || e.getQueryType() != PlayerQueryEvent.QueryType.SELECT || game.executingRollback()) {
+            return;
+        }
+        try {
+            if (game.getTurnStepType() == null) {
+                return;
+            }
+        } catch (RuntimeException ex) {
+            return;
+        }
+        snapshots.submit(this::writeSnapshot);
+    }
+
+    /**
+     * Write the snapshot once the game thread is parked on an open question
+     * (nobody can answer while the lock is held, so it stays parked). The
+     * question was delivered on the game thread, which is then on its way
+     * into HumanPlayer's wait: give it a moment. If no question is open by
+     * then, skip — the next one asks again.
+     */
+    private void writeSnapshot() {
+        synchronized (gameLock) {
+            Thread t = gameThread;
+            if (t == null) {
+                return;
+            }
+            long until = System.currentTimeMillis() + 2_000;
+            while (!(parked(t) && anyPending())) {
+                if (game.hasEnded() || System.currentTimeMillis() > until) {
+                    return;
+                }
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            long t0 = System.currentTimeMillis();
+            try {
+                snapshotBytes = Snapshot.write(game, snapshotPath);
+                snapshotMs = System.currentTimeMillis() - t0;
+                snapshotSeq = game.getGameSeq();
+                snapshotError = null;
+            } catch (Exception ex) {
+                snapshotError = String.valueOf(ex);
+                LOG.warn("snapshot of " + config.gameId() + " failed", ex);
+            }
+        }
+    }
+
+    private static boolean parked(Thread t) {
+        Thread.State s = t.getState();
+        return s == Thread.State.WAITING || s == Thread.State.TIMED_WAITING;
+    }
+
+    private boolean anyPending() {
+        for (Seat s : seatsById.values()) {
+            if (s.pending() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Write a snapshot now, if a question is open; the status either way. */
+    public Map<String, Object> snapshotNow() {
+        if (snapshotPath == null) {
+            return error("no_snapshot", "This game keeps no snapshot", false);
+        }
+        writeSnapshot();
+        return snapshotStatus();
+    }
+
+    /** The last snapshot: its game seq, size and cost, or the error that stopped it. */
+    public Map<String, Object> snapshotStatus() {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("path", snapshotPath == null ? null : snapshotPath.toString());
+        r.put("seq", snapshotSeq < 0 ? null : snapshotSeq);
+        r.put("bytes", snapshotSeq < 0 ? null : snapshotBytes);
+        r.put("ms", snapshotSeq < 0 ? null : snapshotMs);
+        r.put("error", snapshotError);
+        return r;
     }
 
     // ---- small helpers -----------------------------------------------------

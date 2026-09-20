@@ -30,6 +30,8 @@ import mage.constants.Zone;
 import mage.game.Game;
 import mage.game.permanent.Permanent;
 import mage.player.human.HumanPlayer;
+import mage.player.human.PlayerResponse;
+import mage.players.PlayerImpl;
 import mage.players.net.UserData;
 
 import java.util.ArrayList;
@@ -100,6 +102,19 @@ public class SeatPlayer extends HumanPlayer {
             turn.setEndOfTurn(true);
         }
         setPassAfterOwnAction(!full);
+    }
+
+    /**
+     * A seat over another player's state: the CPU's, when a snapshot is
+     * resumed with that seat handed to a person or a pilot. HumanPlayer's
+     * copy constructor keeps the id (every permanent's controller still
+     * resolves), the cards, life, counters and match player; the response
+     * monitor is fresh and the stops are this seat's.
+     */
+    public SeatPlayer(PlayerImpl source) {
+        super(source, new PlayerResponse());
+        setUserData(UserData.getDefaultUserDataView());
+        setFullControl(false);
     }
 
     protected SeatPlayer(SeatPlayer player) {
