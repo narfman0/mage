@@ -32,7 +32,11 @@ public class GainAbilityWithAttachmentEffect extends ContinuousEffectImpl {
     private final Targets targets = new Targets();
     private final Costs<Cost> costs = new CostsImpl<>();
     protected final UseAttachedCost useAttachedCost;
-    private final Consumer<ActivatedAbility> consumer;
+    // Serializable: a game is snapshotted whole for resume (fullpod docs/save-resume.md); a lambda stored here must survive it.
+    public interface AbilityTweak extends Consumer<ActivatedAbility>, java.io.Serializable {
+    }
+
+    private final AbilityTweak consumer;
 
     public GainAbilityWithAttachmentEffect(String rule, Effect effect, Target target, UseAttachedCost attachedCost, Cost... costs) {
         this(rule, new Effects(effect), new Targets(target), attachedCost, costs);
@@ -42,7 +46,7 @@ public class GainAbilityWithAttachmentEffect extends ContinuousEffectImpl {
         this(rule, effects, targets, attachedCost, null, costs);
     }
 
-    public GainAbilityWithAttachmentEffect(String rule, Effects effects, Targets targets, UseAttachedCost attachedCost, Consumer<ActivatedAbility> consumer, Cost... costs) {
+    public GainAbilityWithAttachmentEffect(String rule, Effects effects, Targets targets, UseAttachedCost attachedCost, AbilityTweak consumer, Cost... costs) {
         super(Duration.WhileOnBattlefield, Layer.AbilityAddingRemovingEffects_6, SubLayer.NA, Outcome.AddAbility);
         this.staticText = rule;
         this.effects.addAll(effects);
