@@ -490,6 +490,14 @@ public final class GameHost {
                         seat.batch.poll();
                         continue;
                     }
+                    if (kind == Kind.PICK_DEFENDER && (e.getTargets() == null || e.getTargets().isEmpty())) {
+                        // A defender question with nothing to pick: never the person's
+                        // (a Cancel-only dead end). Cancel it; the attacker isn't declared.
+                        seat.batch.poll();
+                        seat.say("[System] " + Fmt.stripHtml(e.getMessage()) + ": no defender is legal for this attacker");
+                        auto.submit(() -> respondBoolean(seat, false));
+                        return true;
+                    }
                     if (kind == Kind.PICK_DEFENDER) {
                         // The asked-for defender isn't legal for this attacker (forced
                         // elsewhere): drop the step, the question is the person's.
@@ -502,6 +510,7 @@ public final class GameHost {
                     if (kind == Kind.SELECT_BLOCKERS) {
                         seat.batch.poll();
                         UUID id = step.id();
+                        seat.blocking = id;
                         auto.submit(() -> respondUuid(seat, id));
                         return true;
                     }
@@ -511,6 +520,18 @@ public final class GameHost {
                         seat.batch.poll();
                         UUID id = step.id();
                         auto.submit(() -> respondUuid(seat, id));
+                        return true;
+                    }
+                    if (kind == Kind.PICK_TARGET && isBlockTargetQuestion(e)) {
+                        // The engine's "Select attacker to block" without the attacker the
+                        // batch named (batchBlock checks pairs first; this is for what it
+                        // can't foresee): never the person's — it may be empty, a dead end
+                        // with only Cancel (game c827ca01565e). Cancel it, drop the pair,
+                        // and hand the blockers window back with why instead of confirming.
+                        seat.batch.poll();
+                        seat.batch.removeIf(s -> s.kind() == Seat.StepKind.CONFIRM);
+                        seat.say("[System] " + droppedBlock(seat.blocking, step.id()));
+                        auto.submit(() -> respondBoolean(seat, false));
                         return true;
                     }
                     if (kind == Kind.SELECT_BLOCKERS) {
@@ -526,6 +547,18 @@ public final class GameHost {
             seat.say("[System] Combat declaration interrupted: " + Fmt.stripHtml(e.getMessage()));
         }
         return false;
+    }
+
+    /** HumanPlayer.selectCombatGroup's question: which attacker the picked blocker blocks. */
+    private static boolean isBlockTargetQuestion(PlayerQueryEvent e) {
+        return e.getMessage() != null && Fmt.stripHtml(e.getMessage()).contains("attacker to block");
+    }
+
+    /** "Runeclaw Bear can't block Wind Drake (flying)": a batch pair the seat didn't send, for the person. Game thread. */
+    private String droppedBlock(UUID blockerId, UUID attackerId) {
+        Permanent blocker = blockerId == null ? null : game.getPermanent(blockerId);
+        return (blocker == null ? "That creature" : blocker.getName()) + " "
+                + (blocker == null ? "can't block that attacker" : Blocks.cantBlock(game, blocker, attackerId));
     }
 
     /** The yes/no an attack cost asks before it is paid: "Pay {2} to attack?" (PayCostToAttackBlockEffectImpl). */
@@ -1009,6 +1042,8 @@ public final class GameHost {
                     }
                     taken = String.valueOf(choice) + (remember == null ? "" : "_remembered");
                 }
+            } catch (Refused ex) {
+                return error("invalid_choice", ex.getMessage(), true);
             } catch (RuntimeException ex) {
                 LOG.error("choose_action failed for " + seatName, ex);
                 return error("internal_error", String.valueOf(ex), true);
@@ -1315,9 +1350,20 @@ public final class GameHost {
         return found;
     }
 
+    /**
+     * blockers=b:a,…: each pair a BLOCKER step (the engine's blockers window)
+     * and a BLOCK_TARGET step (its "Select attacker to block"). Every pair is
+     * checked first the way the engine will check it ({@link Blocks}): an
+     * illegal one would meet an attacker question without its attacker — an
+     * empty one, a Cancel-only dead end, or with one other legal attacker the
+     * engine's own pick of it (game c827ca01565e). Illegal pairs are dropped
+     * with a line saying why and the rest go; the confirm is left out then,
+     * so the window comes back with what stands. Only illegal pairs: refused.
+     */
     private String batchBlock(Seat seat, Decision d, List<Object> pairs) {
         seat.batch.clear();
         List<Seat.Step> steps = new ArrayList<>();
+        List<String> refused = new ArrayList<>();
         for (Object o : pairs) {
             String pair = String.valueOf(o);
             int colon = pair.indexOf(':');
@@ -1332,8 +1378,18 @@ public final class GameHost {
             if (attacker == null) {
                 throw new IllegalArgumentException("'" + pair.substring(colon + 1) + "' is not an attacker");
             }
+            synchronized (gameLock) {
+                Permanent perm = game.getPermanent(blocker);
+                if (!Blocks.canBlock(game, perm, attacker)) {
+                    refused.add(perm == null ? droppedBlock(null, attacker) : perm.getName() + " " + Blocks.cantBlock(game, perm, attacker));
+                    continue;
+                }
+            }
             steps.add(new Seat.Step(Seat.StepKind.BLOCKER, blocker));
             steps.add(new Seat.Step(Seat.StepKind.BLOCK_TARGET, attacker));
+        }
+        if (steps.isEmpty() && !refused.isEmpty()) {
+            throw new Refused(String.join("; ", refused));
         }
         if (steps.isEmpty()) {
             respondBoolean(seat, true);
@@ -1341,9 +1397,21 @@ public final class GameHost {
         }
         // The first blocker goes now; the engine asks which attacker next.
         seat.batch.addAll(steps.subList(1, steps.size()));
-        seat.batch.add(new Seat.Step(Seat.StepKind.CONFIRM, null));
+        if (refused.isEmpty()) {
+            seat.batch.add(new Seat.Step(Seat.StepKind.CONFIRM, null));
+        } else {
+            refused.forEach(line -> seat.say("[System] " + line));
+        }
+        seat.blocking = steps.get(0).id();
         respondUuid(seat, steps.get(0).id());
         return "batch_block";
+    }
+
+    /** An answer the rules don't allow, refused with the reason as the error. */
+    private static final class Refused extends RuntimeException {
+        Refused(String message) {
+            super(message);
+        }
     }
 
     /**
