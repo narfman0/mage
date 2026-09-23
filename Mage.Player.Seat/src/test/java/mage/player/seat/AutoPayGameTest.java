@@ -103,7 +103,10 @@ public class AutoPayGameTest {
                     if ("GAME_PLAY_MANA".equals(type) || "GAME_PLAY_XMANA".equals(type)) {
                         List<String> offered = new ArrayList<>();
                         for (Map<String, Object> c : ScriptedSeat.choices(d)) {
-                            offered.add(c.get("name") + "#" + c.get("id"));
+                            // "Forest#p3={G}{G}": the id a pick is answered with, and
+                            // what the source makes once the board has its say.
+                            Object produces = c.get("produces");
+                            offered.add(c.get("name") + "#" + c.get("id") + (produces != null ? "=" + produces : ""));
                         }
                         prompts.add(message + " | " + String.join(", ", offered));
                         String pick = manaPrompts < picks.size() ? picks.get(manaPrompts) : null;
@@ -275,6 +278,30 @@ public class AutoPayGameTest {
         Assert.assertEquals(Set.of("Forest", "Island"), forced.tapped());
     }
 
+    /**
+     * A doubler is not in the printed ability: Mana Reflection replaces the
+     * {@code TAPPED_FOR_MANA} event, so the one Forest makes {G}{G} and pays
+     * {1}{G} by itself — no second land, and nothing to ask (report
+     * 3b9a9dfa92).
+     */
+    @Test(timeout = 240_000)
+    public void aDoublerMakesOneLandPayTwoMana() throws Exception {
+        paid(play("Elvish Visionary", "Mana Reflection", "Forest"), "Forest");
+    }
+
+    /**
+     * And the prompt says so, for a client that would otherwise count the
+     * rules text: each source carries what tapping it adds.
+     */
+    @Test(timeout = 240_000)
+    public void aPromptSaysWhatASourceReallyMakes() throws Exception {
+        Outcome o = play("Sol Ring", "Mana Reflection", "Forest", "Island");
+        asked(o);
+        String prompt = o.prompts().get(0);
+        Assert.assertTrue("the Forest makes two green: " + prompt, prompt.contains("={G}{G}"));
+        Assert.assertTrue("the Island makes two blue: " + prompt, prompt.contains("={U}{U}"));
+    }
+
     @Test(timeout = 240_000)
     public void aDualIsKeptUpWhenABasicCanPay() throws Exception {
         paid(play("Llanowar Elves", "Breeding Pool", "Forest"), "Forest");
@@ -406,7 +433,10 @@ public class AutoPayGameTest {
                     if ("GAME_PLAY_MANA".equals(type) || "GAME_PLAY_XMANA".equals(type)) {
                         List<String> offered = new ArrayList<>();
                         for (Map<String, Object> c : ScriptedSeat.choices(d)) {
-                            offered.add(c.get("name") + "#" + c.get("id"));
+                            // "Forest#p3={G}{G}": the id a pick is answered with, and
+                            // what the source makes once the board has its say.
+                            Object produces = c.get("produces");
+                            offered.add(c.get("name") + "#" + c.get("id") + (produces != null ? "=" + produces : ""));
                         }
                         prompts.add(message + " | " + String.join(", ", offered));
                         String pick = manaPrompts < picks.size() ? picks.get(manaPrompts) : null;
