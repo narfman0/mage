@@ -1,5 +1,10 @@
 package mage.player.seat;
 
+import mage.abilities.Ability;
+import mage.abilities.costs.Cost;
+import mage.abilities.costs.mana.ManaCosts;
+import mage.abilities.effects.Effect;
+import mage.abilities.effects.PayCostToAttackBlockEffect;
 import mage.cards.Card;
 import mage.cards.decks.Deck;
 import mage.cards.decks.DeckCardLists;
@@ -16,11 +21,13 @@ import mage.game.Game;
 import mage.game.GameOptions;
 import mage.game.TwoPlayerDuel;
 import mage.game.TwoPlayerMatch;
+import mage.game.events.DeclareAttackerEvent;
 import mage.game.events.PlayerQueryEvent;
 import mage.game.events.TableEvent;
 import mage.game.match.Match;
 import mage.game.match.MatchOptions;
 import mage.game.mulligan.MulliganType;
+import mage.game.permanent.Permanent;
 import mage.player.ai.ComputerPlayer;
 import mage.players.PlayerImpl;
 import mage.players.Player;
@@ -413,14 +420,43 @@ public final class GameHost {
      * "All attack"): a DEFENDER step answers it, a step the engine never
      * asks for (one defender, or a forced one) is skipped, and a defender
      * question with no step behind it is the person's — the batch waits,
-     * since the engine comes back to the attackers window after it.
+     * since the engine comes back to the attackers window after it. So is an
+     * attack cost's "Pay {X} to attack?" and the mana prompt it raises: the
+     * batch waits through them and goes on. The confirm never OKs a window
+     * that still offers a creature of the batch the person wasn't asked
+     * about: it hands the window back with a line saying why.
      */
     private boolean answerFromBatch(Seat seat, PlayerQueryEvent e) {
         Seat.Step step;
         while ((step = seat.batch.peek()) != null) {
             Kind kind = classify(e);
+            if (step.kind() == Seat.StepKind.ATTACKER || step.kind() == Seat.StepKind.CONFIRM) {
+                // An attack cost (Propaganda's "Pay {2} to attack?") asked while the
+                // batch declares an attacker: the question, its mana prompt and anything
+                // else the payment asks are the person's; the batch goes on when the
+                // attackers window comes back — paid, the creature attacks; declined,
+                // declareAttacker's undo drops it.
+                if (kind == Kind.OTHER && (seat.payingTax || isAttackCostQuestion(e))) {
+                    if (isAttackCostQuestion(e) && seat.declaring != null) {
+                        seat.taxAsked.add(seat.declaring);
+                    }
+                    seat.payingTax = true;
+                    return false;
+                }
+                seat.payingTax = false;
+            }
             switch (step.kind()) {
                 case CONFIRM -> {
+                    if (kind == Kind.SELECT_ATTACKERS) {
+                        List<String> left = notAttacking(seat, e);
+                        if (!left.isEmpty()) {
+                            // Never OK a declaration that dropped a creature of the batch
+                            // unasked: the window is the person's, with the reason.
+                            seat.batch.clear();
+                            left.forEach(line -> seat.say("[System] " + line));
+                            return false;
+                        }
+                    }
                     if (kind == Kind.SELECT_ATTACKERS || kind == Kind.SELECT_BLOCKERS) {
                         seat.batch.poll();
                         auto.submit(() -> respondBoolean(seat, true));
@@ -434,6 +470,7 @@ public final class GameHost {
                     if (kind == Kind.SELECT_ATTACKERS) {
                         seat.batch.poll();
                         UUID id = step.id();
+                        seat.declaring = id;
                         auto.submit(() -> respondUuid(seat, id));
                         return true;
                     }
@@ -489,6 +526,73 @@ public final class GameHost {
             seat.say("[System] Combat declaration interrupted: " + Fmt.stripHtml(e.getMessage()));
         }
         return false;
+    }
+
+    /** The yes/no an attack cost asks before it is paid: "Pay {2} to attack?" (PayCostToAttackBlockEffectImpl). */
+    private static boolean isAttackCostQuestion(PlayerQueryEvent e) {
+        return e.getQueryType() == PlayerQueryEvent.QueryType.ASK
+                && e.getMessage() != null && Fmt.stripHtml(e.getMessage()).contains(" to attack?");
+    }
+
+    /**
+     * The creatures of the attack batch the attackers window still offers
+     * although they aren't attacking and the person was never asked about
+     * them — each as a line saying why: an attack cost (named, and whether it
+     * can be paid now) or nothing the seat can see. Empty when the declaration
+     * is what the batch asked for. Runs on the game thread, parked on the window.
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> notAttacking(Seat seat, PlayerQueryEvent e) {
+        List<String> lines = new ArrayList<>();
+        Object offered = e.getOptions() == null ? null : e.getOptions().get("possibleAttackers");
+        if (!(offered instanceof List<?> possible)) {
+            return lines;
+        }
+        for (UUID id : seat.batchAttackers) {
+            if (!possible.contains(id) || game.getCombat().getAttackers().contains(id) || seat.taxAsked.contains(id)) {
+                continue;
+            }
+            Permanent creature = game.getPermanent(id);
+            if (creature == null) {
+                continue;
+            }
+            List<String> sources = new ArrayList<>();
+            boolean payable = true;
+            for (UUID defender : game.getCombat().getDefenders()) {
+                DeclareAttackerEvent event = new DeclareAttackerEvent(defender, id, seat.player.getId());
+                for (Permanent perm : game.getBattlefield().getAllActivePermanents()) {
+                    for (Ability ability : perm.getAbilities(game)) {
+                        for (Effect effect : ability.getEffects()) {
+                            if (effect instanceof PayCostToAttackBlockEffect tax
+                                    && tax.applies(event, ability, game) && !tax.isCostless(event, ability, game)) {
+                                if (!sources.contains(perm.getName())) {
+                                    sources.add(perm.getName());
+                                }
+                                ManaCosts mana = tax.getManaCostToPay(event, ability, game);
+                                Cost other = tax.getOtherCostToPay(event, ability, game);
+                                Cost cost = mana != null ? mana.copy() : other != null ? other.copy() : null;
+                                if (cost != null && !cost.canPay(ability, ability, seat.player.getId(), game)) {
+                                    payable = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (sources.isEmpty() && game.getContinuousEffects().checkIfThereArePayCostToAttackBlockEffects(
+                    new DeclareAttackerEvent(null, id, seat.player.getId()), game)) {
+                sources.add("an effect");
+            }
+            String name = creature.getName();
+            if (sources.isEmpty()) {
+                lines.add(name + " isn't attacking: tap it to attack, or confirm without it");
+            } else if (payable) {
+                lines.add(name + " has an attack cost (" + String.join(", ", sources) + "): tap it to pay, or confirm without it");
+            } else {
+                lines.add(name + " has an attack cost (" + String.join(", ", sources) + ") you can't pay now: confirm without it");
+            }
+        }
+        return lines;
     }
 
     private static Kind classify(PlayerQueryEvent e) {
@@ -1083,15 +1187,30 @@ public final class GameHost {
      * {@code >} and the defender's (a player, planeswalker or battle short id)
      * when there is a choice; {@code all>P2} sends everything at one
      * defender. A bare {@code p1} leaves the defender to the engine — assigned
-     * when there is one, asked of the person otherwise.
+     * when there is one, asked of the person otherwise. "all" is the engine's
+     * "All attack" unless a creature has a cost to attack (Propaganda, Ghostly
+     * Prison), which that skips: then it is every possible attacker in turn.
      */
     private String batchAttack(Seat seat, Decision d, List<Object> ids) {
-        seat.batch.clear();
+        seat.startAttackBatch(List.of());
         if (ids.size() == 1 && String.valueOf(ids.get(0)).startsWith("all")) {
             if (!d.backing.contains("special")) {
                 throw new IllegalArgumentException("no 'all attack' option right now");
             }
             UUID defender = defenderOf(String.valueOf(ids.get(0)), d);
+            List<UUID> everyone = new ArrayList<>();
+            for (Object o : d.backing) {
+                if (o instanceof UUID id) {
+                    everyone.add(id);
+                }
+            }
+            seat.startAttackBatch(everyone);
+            if (!everyone.isEmpty() && attackCostApplies(seat, everyone, defender)) {
+                // XMage's "All attack" skips every creature with an attack cost
+                // (HumanPlayer.selectAttackers): declare them one by one instead,
+                // so each is asked its "Pay {X} to attack?".
+                return batchAttackEach(seat, everyone, defender);
+            }
             if (defender != null) {
                 seat.batch.add(new Seat.Step(Seat.StepKind.DEFENDER, defender));
             }
@@ -1115,6 +1234,7 @@ public final class GameHost {
             respondBoolean(seat, true);
             return "no_attack";
         }
+        seat.startAttackBatch(attackers);
         for (int i = 0; i < attackers.size(); i++) {
             if (i > 0) {
                 seat.batch.add(new Seat.Step(Seat.StepKind.ATTACKER, attackers.get(i)));
@@ -1124,8 +1244,52 @@ public final class GameHost {
             }
         }
         seat.batch.add(new Seat.Step(Seat.StepKind.CONFIRM, null));
+        seat.declaring = attackers.get(0);
         respondUuid(seat, attackers.get(0));
         return "batch_attack";
+    }
+
+    /**
+     * "all" expanded into the per-attacker batch: every possible attacker in
+     * turn, each at {@code defender} when one was named — except a creature
+     * forced to attack elsewhere, whose defender is left to the engine — then
+     * the confirm.
+     */
+    private String batchAttackEach(Seat seat, List<UUID> attackers, UUID defender) {
+        Map<UUID, java.util.Set<UUID>> forced;
+        synchronized (gameLock) {
+            forced = new java.util.HashMap<>(game.getCombat().getCreaturesForcedToAttack());
+        }
+        for (int i = 0; i < attackers.size(); i++) {
+            UUID id = attackers.get(i);
+            if (i > 0) {
+                seat.batch.add(new Seat.Step(Seat.StepKind.ATTACKER, id));
+            }
+            java.util.Set<UUID> only = forced.get(id);
+            if (defender != null && (only == null || only.isEmpty() || only.contains(defender))) {
+                seat.batch.add(new Seat.Step(Seat.StepKind.DEFENDER, defender));
+            }
+        }
+        seat.batch.add(new Seat.Step(Seat.StepKind.CONFIRM, null));
+        seat.declaring = attackers.get(0);
+        respondUuid(seat, attackers.get(0));
+        return "batch_attack";
+    }
+
+    /** Whether any of {@code attackers} has a cost to attack {@code defender} — any defender when none is named. */
+    private boolean attackCostApplies(Seat seat, List<UUID> attackers, UUID defender) {
+        synchronized (gameLock) {
+            List<UUID> defenders = defender != null ? List.of(defender) : new ArrayList<>(game.getCombat().getDefenders());
+            for (UUID id : attackers) {
+                for (UUID def : defenders) {
+                    if (game.getContinuousEffects().checkIfThereArePayCostToAttackBlockEffects(
+                            new DeclareAttackerEvent(def, id, seat.player.getId()), game)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /** The defender named after {@code >} in an attackers entry, checked against the window's defenders; null when none is named. */
