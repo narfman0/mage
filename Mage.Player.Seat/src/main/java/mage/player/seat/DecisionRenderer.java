@@ -749,27 +749,34 @@ public final class DecisionRenderer {
         // The seat's own sources, not the view's playable list: XMage leaves that
         // empty while attackers are declared, where an attack tax is paid, and a
         // Propaganda payment offered only Cancel (report 8c560a8728, 2026-09-23).
-        Map<UUID, List<String>> sources = player.manaSources(game);
-        List<Map.Entry<UUID, List<String>>> sorted = new ArrayList<>(sources.entrySet());
-        sorted.sort(Comparator.<Map.Entry<UUID, List<String>>, String>comparing(entry -> {
+        Map<UUID, List<SeatPlayer.ManaSource>> sources = player.manaSources(game);
+        List<Map.Entry<UUID, List<SeatPlayer.ManaSource>>> sorted = new ArrayList<>(sources.entrySet());
+        sorted.sort(Comparator.<Map.Entry<UUID, List<SeatPlayer.ManaSource>>, String>comparing(entry -> {
             CardView cv = views.findCardView(entry.getKey(), view);
             return cv != null ? views.displayName(cv) : "";
         }).thenComparingInt(entry -> views.sequence(entry.getKey())));
-        for (Map.Entry<UUID, List<String>> entry : sorted) {
+        for (Map.Entry<UUID, List<SeatPlayer.ManaSource>> entry : sorted) {
             UUID id = entry.getKey();
             if (id.equals(payingFor)) {
                 continue;
             }
-            List<String> manaAbilities = entry.getValue();
+            List<SeatPlayer.ManaSource> manaAbilities = entry.getValue();
             CardView cv = views.findCardView(id, view);
             String name = cv != null ? views.displayName(cv) : "Unknown (" + id.toString().substring(0, 8) + ")";
-            for (String ability : manaAbilities) {
+            for (SeatPlayer.ManaSource source : manaAbilities) {
+                String ability = source.rule();
                 Map<String, Object> c = new HashMap<>();
                 c.put("index", choices.size());
                 c.put("id", views.shortId(id));
                 c.put("choice_type", ability.contains("{T}") ? "tap_source" : "mana_source");
                 c.put("name", name);
                 c.put("ability", ability);
+                // What it really adds, the board's replacements applied: a
+                // client counting the payment from the rules text alone
+                // can't see Mana Reflection (report 3b9a9dfa92).
+                if (!source.produces().isEmpty()) {
+                    c.put("produces", source.produces());
+                }
                 choices.add(c);
                 backing.add(id);
             }
