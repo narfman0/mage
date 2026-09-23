@@ -30,6 +30,7 @@ import mage.players.net.UserGroup;
 import mage.target.Target;
 import mage.target.TargetAmount;
 import mage.target.TargetCard;
+import mage.target.common.TargetCardsForPile;
 import mage.util.*;
 import org.apache.log4j.Logger;
 
@@ -897,13 +898,55 @@ public class ComputerPlayer extends PlayerImpl {
 
     @Override
     public boolean choose(Outcome outcome, Cards cards, TargetCard target, Ability source, Game game) {
+        if (target instanceof TargetCardsForPile) {
+            return separatePiles(cards, target, game);
+        }
         return makeChoice(outcome, target, source, game, cards);
+    }
+
+    /**
+     * Separate cards into two piles of as close to equal value as possible (the target gets the first pile).
+     * Whoever chooses between them afterwards, the best pile left to an opponent is as small as it can be,
+     * and the worst pile an opponent can leave you is as big as it can be. Never 0/N for two or more cards.
+     */
+    private boolean separatePiles(Cards cards, TargetCard target, Game game) {
+        List<Card> sorted = new ArrayList<>(cards.getCards(game));
+        sorted.sort(Comparator.comparingInt((Card card) -> pileCardValue(card)).reversed()
+                .thenComparing(Card::getName));
+        int firstValue = 0;
+        int secondValue = 0;
+        for (Card card : sorted) {
+            // largest first, each card to the lighter pile
+            if (firstValue <= secondValue) {
+                target.add(card.getId(), game);
+                firstValue += pileCardValue(card);
+            } else {
+                secondValue += pileCardValue(card);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Value of a card in a pile: a card is worth something for being a card, more for costing more.
+     */
+    private static int pileCardValue(Card card) {
+        return 2 + card.getManaValue();
+    }
+
+    private static int pileValue(List<? extends Card> pile) {
+        return pile.stream().mapToInt(ComputerPlayer::pileCardValue).sum();
     }
 
     @Override
     public boolean choosePile(Outcome outcome, String message, List<? extends Card> pile1, List<? extends Card> pile2, Game game) {
-        //TODO: improve this
-        return true; // select left pile all the time
+        // the pile with more value when the outcome is good for you, the one with less when it is bad
+        int value1 = pileValue(pile1);
+        int value2 = pileValue(pile2);
+        if (value1 == value2) {
+            return true;
+        }
+        return outcome.isGood() == (value1 > value2);
     }
 
     @Override
@@ -962,7 +1005,16 @@ public class ComputerPlayer extends PlayerImpl {
 
     @Override
     public int getAmount(int min, int max, String message, Ability source, Game game) {
-        return makeChoiceAmount(min, max, game, source, false);
+        // fast calc on nothing to choose
+        if (min >= max) {
+            return min;
+        }
+        // "choose a number" with a wide range (Wheel of Misfortune, Void, bids): the AI does not know what the
+        // number does, so it stays near the minimum instead of anywhere in 0..1000
+        int high = max - min > 10 ? min + 3 : max;
+        // and it never names its own life total or more, so a number dealt back as damage or paid as life can't kill it
+        high = Math.max(min, Math.min(high, getLife() - 1));
+        return min + RandomUtil.nextInt(high - min + 1);
     }
 
     @Override
