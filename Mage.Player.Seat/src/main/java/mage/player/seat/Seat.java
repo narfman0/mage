@@ -31,6 +31,8 @@ final class Seat {
     final List<UUID> batchAttackers = new ArrayList<>();
     final Set<UUID> taxAsked = new HashSet<>();
     UUID declaring;
+    /** The blocker the block batch last sent, named when its attacker step is dropped. */
+    UUID blocking;
     /** An attack cost's question was passed to the person: its mana prompt and the rest are theirs until the attackers window returns. */
     boolean payingTax;
     volatile boolean offerManaSources;
