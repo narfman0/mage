@@ -151,7 +151,7 @@ public final class DecisionRenderer {
             case SELECT -> select(r, e, game, view, player, offerManaSources);
             case PICK_TARGET -> target(r, e, game, view, player.getId());
             case PICK_ABILITY -> pickAbility(r, e, game, view, player.getId());
-            case PLAY_MANA, PLAY_X_MANA -> mana(r, e, game, view, player.getId());
+            case PLAY_MANA, PLAY_X_MANA -> mana(r, e, game, view, player);
             case CHOOSE_ABILITY -> abilityPicker(r, e, game);
             case CHOOSE_MODE -> modes(r, e);
             case CHOOSE_CHOICE -> choice(r, e);
@@ -717,39 +717,37 @@ public final class DecisionRenderer {
         return backing;
     }
 
-    private List<Object> mana(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, UUID me) {
+    private List<Object> mana(Map<String, Object> r, PlayerQueryEvent e, Game game, GameView view, SeatPlayer player) {
         r.put("action_type", e.getQueryType() == PlayerQueryEvent.QueryType.PLAY_X_MANA ? "GAME_PLAY_XMANA" : "GAME_PLAY_MANA");
         List<Map<String, Object>> choices = new ArrayList<>();
         List<Object> backing = new ArrayList<>();
         UUID payingFor = payingForId(e.getMessage());
-        PlayableObjectsList playable = view.getCanPlayObjects();
-        if (playable != null) {
-            List<Map.Entry<UUID, PlayableObjectStats>> sorted = new ArrayList<>(playable.getObjects().entrySet());
-            sorted.sort(Comparator.<Map.Entry<UUID, PlayableObjectStats>, String>comparing(entry -> {
-                CardView cv = views.findCardView(entry.getKey(), view);
-                return cv != null ? views.displayName(cv) : "";
-            }).thenComparingInt(entry -> views.sequence(entry.getKey())));
-            for (Map.Entry<UUID, PlayableObjectStats> entry : sorted) {
-                UUID id = entry.getKey();
-                if (id.equals(payingFor)) {
-                    continue;
-                }
-                List<String> manaAbilities = entry.getValue().getAllManaAbilityNames();
-                if (manaAbilities.isEmpty()) {
-                    continue;
-                }
-                CardView cv = views.findCardView(id, view);
-                String name = cv != null ? views.displayName(cv) : "Unknown (" + id.toString().substring(0, 8) + ")";
-                for (String ability : manaAbilities) {
-                    Map<String, Object> c = new HashMap<>();
-                    c.put("index", choices.size());
-                    c.put("id", views.shortId(id));
-                    c.put("choice_type", ability.contains("{T}") ? "tap_source" : "mana_source");
-                    c.put("name", name);
-                    c.put("ability", ability);
-                    choices.add(c);
-                    backing.add(id);
-                }
+        // The seat's own sources, not the view's playable list: XMage leaves that
+        // empty while attackers are declared, where an attack tax is paid, and a
+        // Propaganda payment offered only Cancel (report 8c560a8728, 2026-09-23).
+        Map<UUID, List<String>> sources = player.manaSources(game);
+        List<Map.Entry<UUID, List<String>>> sorted = new ArrayList<>(sources.entrySet());
+        sorted.sort(Comparator.<Map.Entry<UUID, List<String>>, String>comparing(entry -> {
+            CardView cv = views.findCardView(entry.getKey(), view);
+            return cv != null ? views.displayName(cv) : "";
+        }).thenComparingInt(entry -> views.sequence(entry.getKey())));
+        for (Map.Entry<UUID, List<String>> entry : sorted) {
+            UUID id = entry.getKey();
+            if (id.equals(payingFor)) {
+                continue;
+            }
+            List<String> manaAbilities = entry.getValue();
+            CardView cv = views.findCardView(id, view);
+            String name = cv != null ? views.displayName(cv) : "Unknown (" + id.toString().substring(0, 8) + ")";
+            for (String ability : manaAbilities) {
+                Map<String, Object> c = new HashMap<>();
+                c.put("index", choices.size());
+                c.put("id", views.shortId(id));
+                c.put("choice_type", ability.contains("{T}") ? "tap_source" : "mana_source");
+                c.put("name", name);
+                c.put("ability", ability);
+                choices.add(c);
+                backing.add(id);
             }
         }
         ManaPoolView pool = view.getMyPlayer() != null ? view.getMyPlayer().getManaPool() : null;
@@ -763,7 +761,7 @@ public final class DecisionRenderer {
             backing.add(type);
         }
         int before = choices.size();
-        specialActions(choices, backing, game, me, true);
+        specialActions(choices, backing, game, player.getId(), true);
         if (choices.size() > before) {
             // The engine's order (ActivatedManaAbilityImpl.canActivate): once a
             // special payment has been used on a spell, no mana ability may pay

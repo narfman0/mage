@@ -37,6 +37,7 @@ import mage.players.net.UserData;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import org.apache.log4j.Logger;
 import java.util.Map;
@@ -445,15 +446,43 @@ public class SeatPlayer extends HumanPlayer {
     }
 
     private boolean anySource(Ability abilityToCast, Game game) {
-        for (Permanent perm : game.getBattlefield().getAllActivePermanents(playerId)) {
-            if (abilityToCast != null && perm.getId().equals(abilityToCast.getSourceId())) {
-                continue;
-            }
-            if (!getUseableManaAbilities(perm, Zone.BATTLEFIELD, game).isEmpty()) {
+        for (UUID id : manaSources(game).keySet()) {
+            if (abilityToCast == null || !id.equals(abilityToCast.getSourceId())) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Every object this seat could use for mana right now, with the mana
+     * abilities it could activate, by rule text: what XMage's own client
+     * lets a person click during a payment
+     * ({@code HumanPlayer.playManaAbilities}, any zone). Permanents first,
+     * then cards in hand (a Simian Spirit Guide). Unlike the view's playable
+     * list, this doesn't go quiet in the declare-attackers step
+     * ({@code PlayerImpl.SILENT_PHASES_STEPS}), which is where an attack tax
+     * such as Propaganda's is paid.
+     */
+    public Map<UUID, List<String>> manaSources(Game game) {
+        Map<UUID, List<String>> sources = new LinkedHashMap<>();
+        for (Permanent perm : game.getBattlefield().getAllActivePermanents()) {
+            add(sources, perm.getId(), getUseableManaAbilities(perm, Zone.BATTLEFIELD, game));
+        }
+        for (Card card : getHand().getCards(game)) {
+            add(sources, card.getId(), getUseableManaAbilities(card, Zone.HAND, game));
+        }
+        return sources;
+    }
+
+    private static void add(Map<UUID, List<String>> sources, UUID id, Map<UUID, ActivatedManaAbilityImpl> abilities) {
+        if (!abilities.isEmpty()) {
+            List<String> rules = new ArrayList<>();
+            for (ActivatedManaAbilityImpl ability : abilities.values()) {
+                rules.add(ability.toString());
+            }
+            sources.put(id, rules);
+        }
     }
 
     private static boolean tapOnly(ActivatedManaAbilityImpl ability) {
