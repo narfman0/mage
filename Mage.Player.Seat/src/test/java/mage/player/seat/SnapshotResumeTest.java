@@ -133,7 +133,10 @@ public class SnapshotResumeTest {
         Assert.assertEquals("the board as it was, ids included", boardBefore, String.valueOf(h2.state("You").get("board")));
         int reached = playOn(h2, script, List.of("You"), 8);
         Assert.assertTrue("played on to turn " + reached, reached >= 8);
-        Assert.assertNull("resumed snapshot status: " + h2.snapshotStatus(), h2.snapshotStatus().get("error"));
+        // Every question on the way was answered at once, which never writes;
+        // the one left open is written once the debounce has passed.
+        Map<String, Object> resumedStatus = awaitSnapshot(h2, h2.game().getGameSeq());
+        Assert.assertNull("resumed snapshot status: " + resumedStatus, resumedStatus.get("error"));
         Assert.assertTrue("the resumed game keeps its own snapshot", Files.exists(logDir2.resolve(Snapshot.FILE)));
         Assert.assertTrue("and its own record", Files.exists(logDir2.resolve("server_game_events.jsonl")));
         h2.end();
