@@ -16,6 +16,7 @@ import mage.game.Game;
 import mage.players.Player;
 import mage.target.Target;
 import mage.target.TargetCard;
+import mage.target.common.TargetCardsForPile;
 import mage.target.common.TargetOpponent;
 import mage.util.CardUtil;
 
@@ -111,7 +112,7 @@ public class RevealAndSeparatePilesEffect extends OneShotEffect {
         if (separatingPlayer == null) {
             return false;
         }
-        TargetCard target = new TargetCard(0, cards.size(), Zone.LIBRARY, filter);
+        TargetCard target = new TargetCardsForPile(cards.size(), Zone.LIBRARY, filter);
         List<Card> pile1 = new ArrayList<>();
         separatingPlayer.choose(Outcome.Neutral, cards, target, source, game);
         target.getTargets()
@@ -126,7 +127,9 @@ public class RevealAndSeparatePilesEffect extends OneShotEffect {
         if (choosingPlayer == null) {
             return false;
         }
-        boolean choice = choosingPlayer.choosePile(outcome, "Choose a pile to put into hand.", pile1, pile2, game);
+        // the pile goes to the controller's hand: good for the controller, bad for an opponent who chooses it
+        Outcome chooseOutcome = choosingPlayer.getId().equals(controller.getId()) ? outcome : Outcome.Detriment;
+        boolean choice = choosingPlayer.choosePile(chooseOutcome, "Choose a pile to put into hand.", pile1, pile2, game);
 
         Zone pile1Zone = choice ? Zone.HAND : targetZone;
         Zone pile2Zone = choice ? targetZone : Zone.HAND;
