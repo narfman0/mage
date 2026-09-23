@@ -33,7 +33,7 @@ import java.util.concurrent.Executors;
  * next_decision that blocks for one seat never holds up another.
  *
  * Commands: ping, create_game, next_decision, choose_action, state, rollback,
- * concede, set, snapshot, end_game. See docs/engine.md in fullpod for the shapes.
+ * concede, set, snapshot, busy, end_game. See docs/engine.md in fullpod for the shapes.
  */
 public final class SeatHost {
 
@@ -164,7 +164,8 @@ public final class SeatHost {
                 List<GameHost.SeatSpec> seats = new ArrayList<>();
                 for (Map<String, Object> s : (List<Map<String, Object>>) args.get("seats")) {
                     seats.add(new GameHost.SeatSpec(String.valueOf(s.get("name")), String.valueOf(s.getOrDefault("kind", "seat")),
-                            String.valueOf(s.get("deck")), s.get("skill") == null ? 0 : ((Number) s.get("skill")).intValue()));
+                            String.valueOf(s.get("deck")), s.get("skill") == null ? 0 : ((Number) s.get("skill")).intValue(),
+                            s.get("max_think_secs") == null ? 0 : ((Number) s.get("max_think_secs")).intValue()));
                 }
                 Object seed = args.get("seed");
                 GameHost.Config cfg = new GameHost.Config(gameId, String.valueOf(args.getOrDefault("format", "duel")),
@@ -178,6 +179,12 @@ public final class SeatHost {
                         args.get("snapshot_from") == null ? null : String.valueOf(args.get("snapshot_from")),
                         Boolean.TRUE.equals(args.get("snapshot")));
                 GameHost host = new GameHost(cfg);
+                if (args.get("cpu_window_secs") != null) {
+                    host.setCpuWindowMs(Math.round(((Number) args.get("cpu_window_secs")).doubleValue() * 1000));
+                }
+                if (args.get("snapshot_debounce_ms") != null) {
+                    host.setSnapshotDebounceMs(((Number) args.get("snapshot_debounce_ms")).longValue());
+                }
                 games.put(gameId, host);
                 host.start();
                 r.put("game_id", gameId);
@@ -190,7 +197,9 @@ public final class SeatHost {
             }
             case "next_decision" -> {
                 long timeout = args.get("timeout_ms") == null ? 30_000 : ((Number) args.get("timeout_ms")).longValue();
-                r.putAll(game(args).awaitDecision(seat(args), timeout));
+                long busyMs = args.get("busy_ms") == null ? 0 : ((Number) args.get("busy_ms")).longValue();
+                String busyKnown = args.get("busy_known") == null ? null : String.valueOf(args.get("busy_known"));
+                r.putAll(game(args).awaitDecision(seat(args), timeout, busyMs, busyKnown));
             }
             case "choose_action" -> r.putAll(game(args).chooseAction(seat(args), args));
             case "state" -> r.putAll(game(args).state(seat(args)));
@@ -198,8 +207,16 @@ public final class SeatHost {
             case "take_back" -> r.putAll(game(args).takeBack(seat(args)));
             case "concede" -> game(args).concede(seat(args));
             case "snapshot" -> r.putAll(Boolean.TRUE.equals(args.get("now")) ? game(args).snapshotNow() : game(args).snapshotStatus());
+            case "busy" -> r.put("busy", game(args).busy());
             case "set" -> {
                 GameHost host = game(args);
+                if (args.get("cpu_window_secs") != null) {
+                    host.setCpuWindowMs(Math.round(((Number) args.get("cpu_window_secs")).doubleValue() * 1000));
+                }
+                if (args.get("max_think_secs") != null) {
+                    // A CPU seat's think cap, from its next think on (fullpod docs/engine.md).
+                    host.setCpuMaxThinkSecs(seat(args), ((Number) args.get("max_think_secs")).intValue());
+                }
                 if (args.get("offer_mana_sources") != null) {
                     host.setOfferManaSources(seat(args), Boolean.TRUE.equals(args.get("offer_mana_sources")));
                 }

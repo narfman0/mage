@@ -22,7 +22,6 @@ import mage.game.match.Match;
 import mage.game.match.MatchOptions;
 import mage.game.mulligan.MulliganType;
 import mage.player.ai.ComputerPlayer;
-import mage.player.ai.ComputerPlayer7;
 import mage.players.PlayerImpl;
 import mage.players.Player;
 import org.apache.log4j.Logger;
@@ -53,7 +52,15 @@ public final class GameHost {
 
     private static final Logger LOG = Logger.getLogger(GameHost.class);
 
-    public record SeatSpec(String name, String kind, String deck, int skill) {
+    /**
+     * One seat: a person or pilot ({@code seat}) or the XMage CPU ({@code cpu}).
+     * A CPU's {@code skill} sets its search depth (at least 4) and, unless
+     * {@code maxThinkSecs} is given, its think cap (3 s a point, upstream's rule).
+     */
+    public record SeatSpec(String name, String kind, String deck, int skill, int maxThinkSecs) {
+        public SeatSpec(String name, String kind, String deck, int skill) {
+            this(name, kind, deck, skill, 0);
+        }
     }
 
     /**
@@ -124,6 +131,29 @@ public final class GameHost {
     private volatile long snapshotBytes;
     private volatile long snapshotMs;
     private volatile String snapshotError;
+    // The snapshot write (Snapshot): only at a question still open
+    // `snapshotDebounceMs` after it was asked, so a stop answered at once (an
+    // auto-pass, a quick answer) never waits on a write; and any answer aborts
+    // a write in progress (`answers` moves, the stream throws, the previous
+    // file stays). `snapshotWritingSince` is when the current write started.
+    private volatile long snapshotDebounceMs = 1_500;
+    private final java.util.concurrent.atomic.AtomicLong answers = new java.util.concurrent.atomic.AtomicLong();
+    private volatile long snapshotWritingSince;
+
+    // ---- perf (fullpod docs/engine.md "Perf records") ----
+    // What made the table wait, drained onto the next reply that has a seat:
+    // each CPU think and window, each snapshot write, each answer that waited
+    // on the lock. Bounded: a game nobody polls keeps its newest 256.
+    private static final int PERF_RING = 256;
+    private final java.util.ArrayDeque<Map<String, Object>> perf = new java.util.ArrayDeque<>();
+    // The XMage CPUs by engine name (SeatCpu, or an older snapshot's ComputerPlayer7).
+    private final Map<String, mage.player.ai.ComputerPlayer6> cpus = new LinkedHashMap<>();
+    // The per-window ceiling on CPU thinking (SeatCpu.Hooks.capFor): a window
+    // is the stretch between two questions to a seat; 0 = none.
+    private volatile long cpuWindowMs = 8_000;
+    private final java.util.concurrent.atomic.AtomicLong windowSpentMs = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicInteger windowThinks = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile int windowTurn = -1;
 
     /** Once per JVM: the data collectors, so decisions land in server_game_events.jsonl when a game has a log dir. */
     public static synchronized void initCollectors() {
@@ -177,7 +207,13 @@ public final class GameHost {
         for (SeatSpec spec : config.seats()) {
             Player player;
             if ("cpu".equals(spec.kind())) {
-                player = new ComputerPlayer7(spec.name(), range, spec.skill() > 0 ? spec.skill() : 6);
+                SeatCpu cpu = new SeatCpu(spec.name(), range, spec.skill() > 0 ? spec.skill() : 6);
+                if (spec.maxThinkSecs() > 0) {
+                    cpu.setMaxThinkSecs(spec.maxThinkSecs());
+                }
+                cpu.setHooks(cpuHooks);
+                cpus.put(spec.name(), cpu);
+                player = cpu;
             } else {
                 SeatPlayer seat = new SeatPlayer(spec.name(), range);
                 seat.setAskWhenAmbiguous(config.offerManaSources());
@@ -230,6 +266,19 @@ public final class GameHost {
             if ("cpu".equals(spec.kind())) {
                 if (!(p instanceof ComputerPlayer)) {
                     throw new IllegalArgumentException(spec.name() + " was a seat in the snapshot; it can't become the CPU");
+                }
+                // The file's cap is the one it was written with; the spec's wins.
+                if (p instanceof SeatCpu cpu) {
+                    cpu.setHooks(cpuHooks);
+                    if (spec.maxThinkSecs() > 0) {
+                        cpu.setMaxThinkSecs(spec.maxThinkSecs());
+                    }
+                    cpus.put(spec.name(), cpu);
+                } else if (p instanceof mage.player.ai.ComputerPlayer6 cp6) {
+                    if (spec.maxThinkSecs() > 0) {
+                        cp6.setMaxThinkTimeSecs(spec.maxThinkSecs());
+                    }
+                    cpus.put(spec.name(), cp6);
                 }
                 continue;
             }
@@ -339,6 +388,7 @@ public final class GameHost {
         if (answerFromBatch(seat, e)) {
             return;
         }
+        endWindow(seat.name); // a seat is asked: the CPUs' window is over
         try {
             seat.deliver(renderer.render(game, seat.player, e, seq, seat.offerManaSources));
         } catch (RuntimeException ex) {
@@ -463,37 +513,61 @@ public final class GameHost {
     // ---- responses (never on the game thread) -----------------------------
 
     private void respondUuid(Seat seat, UUID id) {
-        synchronized (gameLock) {
+        answering(seat, () -> {
             DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "uuid", id);
             seat.player.setResponseUUID(id);
-        }
+        });
     }
 
     private void respondBoolean(Seat seat, boolean value) {
-        synchronized (gameLock) {
+        answering(seat, () -> {
             DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "boolean", value);
             seat.player.setResponseBoolean(value);
-        }
+        });
     }
 
     private void respondString(Seat seat, String value) {
-        synchronized (gameLock) {
+        answering(seat, () -> {
             DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "string", value);
             seat.player.setResponseString(value);
-        }
+        });
     }
 
     private void respondInteger(Seat seat, int value) {
-        synchronized (gameLock) {
+        answering(seat, () -> {
             DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "integer", value);
             seat.player.setResponseInteger(value);
-        }
+        });
     }
 
     private void respondManaType(Seat seat, ManaType type) {
-        synchronized (gameLock) {
+        answering(seat, () -> {
             DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(), "manaType", type);
             seat.player.setResponseManaType(seat.player.getId(), type);
+        });
+    }
+
+    /**
+     * Every answer goes through here: it aborts a snapshot write in progress
+     * (the counter moves before the lock is asked for, the write's stream sees
+     * it within one buffer), then takes the lock the write holds. An answer
+     * that still waited over 100 ms for it is a perf record.
+     */
+    private void answering(Seat seat, Runnable send) {
+        answers.incrementAndGet();
+        boolean writing = snapshotWritingSince != 0;
+        long t0 = System.currentTimeMillis();
+        synchronized (gameLock) {
+            long waited = System.currentTimeMillis() - t0;
+            if (waited > 100) {
+                Map<String, Object> r = new LinkedHashMap<>();
+                r.put("kind", "answer_blocked");
+                r.put("seat", seat.name);
+                r.put("ms", waited);
+                r.put("by", writing ? "snapshot" : "lock");
+                perf(r);
+            }
+            send.run();
         }
     }
 
@@ -509,13 +583,36 @@ public final class GameHost {
 
     /** Blocks until the seat has a question, the game is over, or the timeout passes. */
     public Map<String, Object> awaitDecision(String seatName, long timeoutMs) throws InterruptedException {
+        return awaitDecision(seatName, timeoutMs, 0, null);
+    }
+
+    /**
+     * As above, and with {@code busyMs} > 0 it also comes back early, without a
+     * question, when what the table is waiting on changes: a CPU think or a
+     * snapshot write that has run {@code busyMs} or more ({@code busy}, see
+     * {@link #busy()}) that isn't {@code busyKnown} (the caller's last
+     * {@code busy.key}), or the end of the one it knew ({@code busy: null}).
+     */
+    public Map<String, Object> awaitDecision(String seatName, long timeoutMs, long busyMs, String busyKnown) throws InterruptedException {
         Seat seat = seat(seatName);
         long deadline = System.currentTimeMillis() + timeoutMs;
+        String known = busyKnown == null ? "" : busyKnown;
+        Map<String, Object> busyNow = null;
+        boolean busyChanged = false;
         synchronized (seat.lock) {
             while (seat.pending() == null && !isOver()) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0) {
                     break;
+                }
+                if (busyMs > 0) {
+                    busyNow = busy();
+                    boolean long_ = busyNow != null && ((Number) busyNow.get("since_ms")).longValue() >= busyMs;
+                    String key = long_ ? String.valueOf(busyNow.get("key")) : "";
+                    if (long_ ? !key.equals(known) : (!known.isEmpty() && busyNow == null)) {
+                        busyChanged = true;
+                        break;
+                    }
                 }
                 seat.lock.wait(Math.min(left, 100));
             }
@@ -524,6 +621,9 @@ public final class GameHost {
         Map<String, Object> r = new LinkedHashMap<>();
         if (d != null) {
             r.putAll(d.result);
+        } else if (busyChanged) {
+            r.put("action_pending", false);
+            r.put("busy", busyNow);
         } else {
             r.put("action_pending", false);
             if (!isOver()) {
@@ -576,6 +676,138 @@ public final class GameHost {
         if (snapshotPath != null && snapshotError != null) {
             r.put("snapshot_error", snapshotError); // the product says so on the stream: a resume would be refused
         }
+        List<Map<String, Object>> records = drainPerf();
+        if (!records.isEmpty()) {
+            r.put("perf", records);
+        }
+    }
+
+    // ---- perf ----------------------------------------------------------------
+
+    private final SeatCpu.Hooks cpuHooks = new SeatCpu.Hooks() {
+        @Override
+        public int capFor(int seatCapSecs) {
+            long ceiling = cpuWindowMs;
+            if (ceiling <= 0) {
+                return seatCapSecs;
+            }
+            int turn = game == null ? -1 : game.getTurnNum();
+            if (turn != windowTurn) {
+                // A turn with no question to a seat in it (every person out) still ends a window.
+                windowTurn = turn;
+                endWindow(null);
+            }
+            long left = ceiling - windowSpentMs.get();
+            return (int) Math.max(1, Math.min(seatCapSecs, left / 1000));
+        }
+
+        @Override
+        public void thought(long ms) {
+            windowSpentMs.addAndGet(ms);
+            windowThinks.incrementAndGet();
+        }
+
+        @Override
+        public void record(Map<String, Object> record) {
+            perf(record);
+        }
+    };
+
+    /**
+     * The CPUs' window is over: a seat was asked (or the turn changed). One
+     * record when anyone thought in it — how long the table waited on CPU
+     * thinking between two questions to a seat, the number the window ceiling
+     * bounds.
+     */
+    private void endWindow(String askedSeat) {
+        long spent = windowSpentMs.getAndSet(0);
+        int thinks = windowThinks.getAndSet(0);
+        if (thinks > 0) {
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("kind", "table_window");
+            r.put("seat", askedSeat);
+            r.put("ms", spent);
+            r.put("thinks", thinks);
+            perf(r);
+        }
+    }
+
+    private void perf(Map<String, Object> record) {
+        synchronized (perf) {
+            if (perf.size() >= PERF_RING) {
+                perf.pollFirst();
+            }
+            perf.addLast(record);
+        }
+    }
+
+    private List<Map<String, Object>> drainPerf() {
+        synchronized (perf) {
+            List<Map<String, Object>> out = new ArrayList<>(perf);
+            perf.clear();
+            return out;
+        }
+    }
+
+    /**
+     * What the table is waiting on right now, when it isn't a person: a CPU
+     * thinking ({@code cpu_think}, which seat, for how long, its cap) or a
+     * snapshot being written ({@code snapshot}); null when neither. {@code key}
+     * names this one think or write.
+     */
+    public Map<String, Object> busy() {
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, mage.player.ai.ComputerPlayer6> e : cpus.entrySet()) {
+            if (e.getValue() instanceof SeatCpu cpu) {
+                long since = cpu.thinkingSince();
+                if (since > 0) {
+                    Map<String, Object> b = new LinkedHashMap<>();
+                    b.put("seat", e.getKey());
+                    b.put("kind", "cpu_think");
+                    b.put("since_ms", now - since);
+                    b.put("cap_s", cpu.getMaxThinkSecs());
+                    b.put("key", "cpu_think:" + e.getKey() + ":" + since);
+                    return b;
+                }
+            }
+        }
+        long writing = snapshotWritingSince;
+        if (writing > 0) {
+            Map<String, Object> b = new LinkedHashMap<>();
+            b.put("seat", null);
+            b.put("kind", "snapshot");
+            b.put("since_ms", now - writing);
+            b.put("key", "snapshot:" + writing);
+            return b;
+        }
+        return null;
+    }
+
+    /** A CPU seat's think cap (whole seconds, at least 1), from its next think on. */
+    public void setCpuMaxThinkSecs(String cpuName, int secs) {
+        mage.player.ai.ComputerPlayer6 cpu = cpus.get(cpuName);
+        if (cpu == null) {
+            throw new IllegalArgumentException("no such CPU seat: " + cpuName);
+        }
+        if (cpu instanceof SeatCpu seatCpu) {
+            seatCpu.setMaxThinkSecs(secs);
+        } else {
+            cpu.setMaxThinkTimeSecs(Math.max(1, secs));
+        }
+    }
+
+    public boolean isCpu(String name) {
+        return cpus.containsKey(name);
+    }
+
+    /** The ceiling on CPU thinking per window, in ms; 0 turns it off. */
+    public void setCpuWindowMs(long ms) {
+        this.cpuWindowMs = Math.max(0, ms);
+    }
+
+    /** How long a question must stay open before the snapshot is written; 0 writes at once. */
+    public void setSnapshotDebounceMs(long ms) {
+        this.snapshotDebounceMs = Math.max(0, ms);
     }
 
     /** The board as the seat sees it right now, without a question. */
@@ -966,6 +1198,7 @@ public final class GameHost {
         }
         Decision stale = seat.pending();
         seat.batch.clear();
+        answers.incrementAndGet(); // aborts a snapshot write in progress
         synchronized (gameLock) {
             game.rollbackTurns(turns);
         }
@@ -995,6 +1228,7 @@ public final class GameHost {
             if (seat.player.getStoredBookmark() == -1 || !seat.player.getId().equals(game.getPriorityPlayerId())) {
                 return error("no_take_back", "Nothing to take back", false);
             }
+            answers.incrementAndGet();
             synchronized (gameLock) {
                 game.undo(seat.player.getId());
                 game.informPlayers(seat.player.getLogName() + " takes back the mana they tapped");
@@ -1009,6 +1243,7 @@ public final class GameHost {
     public void concede(String seatName) {
         Seat seat = seat(seatName);
         game.informPlayers(seat.player.getLogName() + " wants to concede");
+        answers.incrementAndGet();
         synchronized (gameLock) {
             game.setConcedingPlayer(seat.player.getId());
         }
@@ -1054,6 +1289,7 @@ public final class GameHost {
 
     /** Ends the game (the engine tells the players) and waits briefly for the game thread. */
     public void end() {
+        answers.incrementAndGet();
         synchronized (gameLock) {
             if (!game.hasEnded()) {
                 game.end();
@@ -1096,7 +1332,7 @@ public final class GameHost {
         } catch (RuntimeException ex) {
             return;
         }
-        snapshots.submit(this::writeSnapshot);
+        snapshots.submit(() -> writeSnapshot());
     }
 
     /**
@@ -1105,35 +1341,83 @@ public final class GameHost {
      * question was delivered on the game thread, which is then on its way
      * into HumanPlayer's wait: give it a moment. If no question is open by
      * then, skip — the next one asks again.
+     *
+     * Only a question still open {@code snapshotDebounceMs} after it was asked
+     * is written (the wait is outside the lock): a stop answered at once — the
+     * product's auto-passes, a quick answer — never pays for a write, and the
+     * file is at most a few stops behind, which a resume accepts. An answer
+     * during the write aborts it ({@link #answering}): the write stops within
+     * a buffer, the previous file stays, and the answer goes through.
      */
     private void writeSnapshot() {
-        synchronized (gameLock) {
-            Thread t = gameThread;
-            if (t == null) {
+        writeSnapshot(snapshotDebounceMs);
+    }
+
+    private void writeSnapshot(long debounceMs) {
+        Thread t = gameThread;
+        if (t == null) {
+            return;
+        }
+        long asked = System.currentTimeMillis();
+        long until = asked + 2_000;
+        while (!(parked(t) && anyPending())) {
+            if (game.hasEnded() || System.currentTimeMillis() > until) {
                 return;
             }
-            long until = System.currentTimeMillis() + 2_000;
-            while (!(parked(t) && anyPending())) {
-                if (game.hasEnded() || System.currentTimeMillis() > until) {
-                    return;
-                }
-                try {
-                    Thread.sleep(5);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
+            if (!sleep(5)) {
+                return;
+            }
+        }
+        long parkWait = System.currentTimeMillis() - asked;
+        int seq = game.getGameSeq();
+        long answered = answers.get();
+        long waitUntil = asked + debounceMs;
+        while (System.currentTimeMillis() < waitUntil) {
+            if (answers.get() != answered || game.getGameSeq() != seq || game.hasEnded()) {
+                return; // answered at once: the next question writes, if it stays open
+            }
+            if (!sleep(Math.min(50, Math.max(1, waitUntil - System.currentTimeMillis())))) {
+                return;
+            }
+        }
+        synchronized (gameLock) {
+            if (answers.get() != answered || game.getGameSeq() != seq || !(parked(t) && anyPending())) {
+                return;
             }
             long t0 = System.currentTimeMillis();
+            snapshotWritingSince = t0;
+            Map<String, Object> r = new LinkedHashMap<>();
+            r.put("kind", "snapshot");
+            r.put("seq", seq);
             try {
-                snapshotBytes = Snapshot.write(game, snapshotPath);
+                long bytes = Snapshot.write(game, snapshotPath, () -> answers.get() != answered);
+                snapshotBytes = bytes;
                 snapshotMs = System.currentTimeMillis() - t0;
-                snapshotSeq = game.getGameSeq();
+                snapshotSeq = seq;
                 snapshotError = null;
+                r.put("bytes", bytes);
+            } catch (Snapshot.Aborted ex) {
+                r.put("aborted", true);
             } catch (Exception ex) {
                 snapshotError = String.valueOf(ex);
+                r.put("error", snapshotError);
                 LOG.warn("snapshot of " + config.gameId() + " failed", ex);
+            } finally {
+                snapshotWritingSince = 0;
             }
+            r.put("ms", System.currentTimeMillis() - t0);
+            r.put("park_wait_ms", parkWait);
+            perf(r);
+        }
+    }
+
+    private static boolean sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+            return true;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
@@ -1156,7 +1440,7 @@ public final class GameHost {
         if (snapshotPath == null) {
             return error("no_snapshot", "This game keeps no snapshot", false);
         }
-        writeSnapshot();
+        writeSnapshot(0);
         return snapshotStatus();
     }
 
