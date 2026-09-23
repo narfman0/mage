@@ -391,6 +391,15 @@ public final class DecisionRenderer {
             if (blockers != null && (!blockers.isEmpty() || !already.isEmpty())) {
                 r.put("combat_phase", "declare_blockers");
                 if (!already.isEmpty()) {
+                    // "Can't be blocked except by two or more" (menace): a check of
+                    // the whole declaration the engine makes at confirm, so the
+                    // client can hold the confirm until the attacker has enough.
+                    for (Map<String, Object> a : already) {
+                        Permanent attacker = game.getPermanent(views.resolve(String.valueOf(a.get("id"))));
+                        if (attacker != null && attacker.getMinBlockedBy() > 1) {
+                            a.put("min_blockers", attacker.getMinBlockedBy());
+                        }
+                    }
                     r.put("incoming_attackers", already);
                 }
                 for (UUID id : blockers) {
@@ -399,6 +408,21 @@ public final class DecisionRenderer {
                         continue;
                     }
                     Map<String, Object> c = creatureChoice(choices.size(), id, perm, "blocker");
+                    // The attackers this creature may block (Blocks: the engine's own
+                    // per-pair check); none still sends it, with why, so the client can
+                    // say so instead of hiding it.
+                    Permanent blocker = game.getPermanent(id);
+                    List<String> can = new ArrayList<>();
+                    for (Map<String, Object> a : already) {
+                        UUID attackerId = views.resolve(String.valueOf(a.get("id")));
+                        if (attackerId != null && Blocks.canBlock(game, blocker, attackerId)) {
+                            can.add(String.valueOf(a.get("id")));
+                        }
+                    }
+                    c.put("can_block", can);
+                    if (can.isEmpty() && blocker != null) {
+                        c.put("block_reason", Blocks.cantBlockAny(game, blocker));
+                    }
                     choices.add(c);
                     backing.add(id);
                 }
