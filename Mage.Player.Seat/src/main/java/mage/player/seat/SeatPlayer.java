@@ -366,6 +366,7 @@ public class SeatPlayer extends HumanPlayer {
      */
     private List<AutoPay.Source> sources(Ability abilityToCast, Game game, boolean cleanOnly, Map<UUID, ActivatedManaAbilityImpl> abilities, Map<UUID, Permanent> permanents) {
         List<AutoPay.Source> sources = new ArrayList<>();
+        ManaMade made = new ManaMade(game);
         for (Permanent perm : game.getBattlefield().getAllActivePermanents(playerId)) {
             if (abilityToCast != null && perm.getId().equals(abilityToCast.getSourceId())) {
                 continue;
@@ -388,8 +389,14 @@ public class SeatPlayer extends HumanPlayer {
                     }
                     clean = false;
                 }
-                for (Mana m : ability.getNetMana(game)) {
-                    if (m instanceof ConditionalMana) {
+                for (Mana net : ability.getNetMana(game)) {
+                    if (net instanceof ConditionalMana) {
+                        continue;
+                    }
+                    // What tapping it adds, not what it reads: a doubler on the
+                    // board makes a Forest two green ({@link ManaMade}).
+                    Mana m = made.made(ability, net);
+                    if (m == null) {
                         continue;
                     }
                     List<AutoPay.Kind> units = AutoPay.units(m.getWhite(), m.getBlue(), m.getBlack(), m.getRed(), m.getGreen(), m.getColorless(), m.getAny());
@@ -464,22 +471,31 @@ public class SeatPlayer extends HumanPlayer {
      * ({@code PlayerImpl.SILENT_PHASES_STEPS}), which is where an attack tax
      * such as Propaganda's is paid.
      */
-    public Map<UUID, List<String>> manaSources(Game game) {
-        Map<UUID, List<String>> sources = new LinkedHashMap<>();
+    public Map<UUID, List<ManaSource>> manaSources(Game game) {
+        Map<UUID, List<ManaSource>> sources = new LinkedHashMap<>();
+        ManaMade made = new ManaMade(game);
         for (Permanent perm : game.getBattlefield().getAllActivePermanents()) {
-            add(sources, perm.getId(), getUseableManaAbilities(perm, Zone.BATTLEFIELD, game));
+            add(sources, perm.getId(), getUseableManaAbilities(perm, Zone.BATTLEFIELD, game), made);
         }
         for (Card card : getHand().getCards(game)) {
-            add(sources, card.getId(), getUseableManaAbilities(card, Zone.HAND, game));
+            add(sources, card.getId(), getUseableManaAbilities(card, Zone.HAND, game), made);
         }
         return sources;
     }
 
-    private static void add(Map<UUID, List<String>> sources, UUID id, Map<UUID, ActivatedManaAbilityImpl> abilities) {
+    /**
+     * One way to tap a source: the ability as it reads, and what activating
+     * it actually adds ({@code "{G}{G}"} for a Forest under Mana Reflection),
+     * empty when the ability has more than one answer of its own size.
+     */
+    public record ManaSource(String rule, String produces) {
+    }
+
+    private static void add(Map<UUID, List<ManaSource>> sources, UUID id, Map<UUID, ActivatedManaAbilityImpl> abilities, ManaMade made) {
         if (!abilities.isEmpty()) {
-            List<String> rules = new ArrayList<>();
+            List<ManaSource> rules = new ArrayList<>();
             for (ActivatedManaAbilityImpl ability : abilities.values()) {
-                rules.add(ability.toString());
+                rules.add(new ManaSource(ability.toString(), made.text(ability)));
             }
             sources.put(id, rules);
         }
