@@ -46,13 +46,29 @@ public class TargetOptimization {
 
         // use one target per group
         Set<UUID> newPossibleTargets = new HashSet<>();
-        targetGroups.forEach((groupKey, groupTargets) -> {
-            UUID targetId = RandomUtil.randomFromCollection(groupTargets);
-            if (targetId != null) {
-                newPossibleTargets.add(targetId);
-                groupTargets.remove(targetId);
+        if (targetGroups.size() <= maxPossibleTargetsToSimulate) {
+            targetGroups.forEach((groupKey, groupTargets) -> {
+                UUID targetId = RandomUtil.randomFromCollection(groupTargets);
+                if (targetId != null) {
+                    newPossibleTargets.add(targetId);
+                    groupTargets.remove(targetId);
+                }
+            });
+        } else {
+            // more groups than the limit even after loose grouping (a big board of
+            // distinct permanents): one target from each of random groups, up to the
+            // limit — every target over it multiplies the combinations to simulate,
+            // and each simulated combination is a whole game copy
+            List<String> groupKeys = new ArrayList<>(targetGroups.keySet());
+            while (!groupKeys.isEmpty() && newPossibleTargets.size() < maxPossibleTargetsToSimulate) {
+                List<UUID> groupTargets = targetGroups.get(groupKeys.remove(RandomUtil.nextInt(groupKeys.size())));
+                UUID targetId = RandomUtil.randomFromCollection(groupTargets);
+                if (targetId != null) {
+                    newPossibleTargets.add(targetId);
+                    groupTargets.remove(targetId);
+                }
             }
-        });
+        }
 
         // use random target until fill condition
         while (newPossibleTargets.size() < maxPossibleTargetsToSimulate) {

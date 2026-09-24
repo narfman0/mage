@@ -34,6 +34,11 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
 
     private static final boolean AI_SIMULATE_ALL_BAD_AND_GOOD_TARGETS = false; // TODO: enable and do performance test (it's increase calculations by x2, but is it useful?)
 
+    // a triggered ability's options are all added to the sims tree at once, each one a whole
+    // game copy: on a big multiplayer board a few thousand of them (any number of targets, damage
+    // divided among targets) are more than any heap, so simulate an evenly spread sample
+    private static final int AI_MAX_TRIGGER_OPTIONS_TO_SIMULATE = 30;
+
     // warning, simulated player do not restore own data by game rollback
     private final boolean isSimulatedPlayer;
     private transient ConcurrentLinkedQueue<Ability> allActions; // all possible abilities to play (copies with already selected targets)
@@ -335,8 +340,13 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
                 return true;
             }
             logger.debug("simulating -- triggered ability - adding children:" + options.size());
-            for (Ability option : options) {
-                addAbilityNode(parent, option, depth, game);
+            int step = Math.max(1, (options.size() + AI_MAX_TRIGGER_OPTIONS_TO_SIMULATE - 1) / AI_MAX_TRIGGER_OPTIONS_TO_SIMULATE);
+            for (int i = 0; i < options.size(); i += step) {
+                // a timed out think is interrupted: stop copying games for it
+                if (Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+                addAbilityNode(parent, options.get(i), depth, game);
             }
         }
         return true;
