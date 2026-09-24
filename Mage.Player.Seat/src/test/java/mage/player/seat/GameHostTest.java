@@ -134,7 +134,45 @@ public class GameHostTest {
             for (int i = 0; i < 50 && !host.isOver(); i++) {
                 Thread.sleep(100);
             }
-            Assert.assertEquals(Boolean.TRUE, board(host.state("You")).get("out"));
+            Map<String, Object> over = host.state("You");
+            Assert.assertEquals(Boolean.TRUE, board(over).get("out"));
+            // A real result names the winning seat by its name, not XMage's
+            // sentence ("Player CPU is the winner"), and is never a crash.
+            Assert.assertEquals(Boolean.TRUE, over.get("game_over"));
+            Assert.assertEquals("CPU", over.get("winner"));
+            Assert.assertNull(over.get("draw"));
+            Assert.assertNull(over.get("engine_died"));
+        } finally {
+            host.end();
+        }
+    }
+
+    /**
+     * A game thread that dies (an OutOfMemoryError in GameState.copy, report
+     * fa5cec13dd) is not a game that ended: no game_over, no winner, no draw
+     * — XMage's getWinner() says "Game is a draw" for any game without a
+     * winner, and that is what the player read. The result says engine_died
+     * with the thread's cause.
+     */
+    @Test(timeout = 60_000)
+    public void aDeadGameThreadIsACrashNotADraw() throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("dies", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)), false));
+        try {
+            host.launch(() -> {
+                throw new OutOfMemoryError("Java heap space");
+            });
+            Map<String, Object> d = host.awaitDecision("You", 10_000);
+            Assert.assertTrue(host.isOver());
+            Assert.assertTrue(host.threadDied());
+            Assert.assertEquals(Boolean.FALSE, d.get("action_pending"));
+            Assert.assertEquals(Boolean.TRUE, d.get("engine_died"));
+            Assert.assertNull("a crash is not a result: " + d, d.get("game_over"));
+            Assert.assertNull(d.get("winner"));
+            Assert.assertNull(d.get("draw"));
+            Assert.assertNull("not a stall: " + d, d.get("timed_out"));
+            Assert.assertEquals("game thread died: java.lang.OutOfMemoryError: Java heap space", d.get("error"));
+            Assert.assertNull(host.winnerName());
         } finally {
             host.end();
         }
