@@ -342,17 +342,32 @@ public final class GameHost {
             return;
         }
         UUID chooser = "host".equals(String.valueOf(config.startingPlayer())) ? players.get(0).getId() : null;
+        launch(() -> {
+            if (resumed) {
+                // What GameImpl.start would have done for the collectors: open
+                // this session's record (game_start names the players), then
+                // play on from the snapshot's turn, phase and step (Turn.resumePlay).
+                DataCollectorServices.getInstance().onGameStart(game);
+                game.resume();
+            } else {
+                game.start(chooser);
+            }
+        });
+    }
+
+    /**
+     * The game thread around {@code body}: what it dies of is kept
+     * ({@code gameError}) and reported on every result. Package-private so the
+     * harness can start a body that dies the way a real game can (an
+     * OutOfMemoryError in GameState.copy, report fa5cec13dd).
+     */
+    synchronized void launch(Runnable body) {
+        if (gameThread != null) {
+            return;
+        }
         gameThread = new Thread(() -> {
             try {
-                if (resumed) {
-                    // What GameImpl.start would have done for the collectors: open
-                    // this session's record (game_start names the players), then
-                    // play on from the snapshot's turn, phase and step (Turn.resumePlay).
-                    DataCollectorServices.getInstance().onGameStart(game);
-                    game.resume();
-                } else {
-                    game.start(chooser);
-                }
+                body.run();
             } catch (Throwable t) {
                 gameError = t;
                 LOG.error("game thread died: " + config.gameId(), t);
@@ -365,8 +380,41 @@ public final class GameHost {
         gameThread.start();
     }
 
+    /**
+     * No more questions will come: the game ended, or its thread is gone.
+     * The two are not the same outcome — {@link #threadDied()} tells them
+     * apart, and only an ended game has a result.
+     */
     public boolean isOver() {
-        return game.hasEnded() || (gameThread != null && !gameThread.isAlive());
+        return game.hasEnded() || threadDied();
+    }
+
+    /**
+     * The game thread is gone while the game never ended: it died (of what,
+     * {@code gameError} says). A crash, not a result — the seat's result says
+     * {@code engine_died}, never {@code game_over}, and names no winner.
+     */
+    public boolean threadDied() {
+        Thread t = gameThread;
+        return t != null && !t.isAlive() && !game.hasEnded();
+    }
+
+    /**
+     * The winning seat's name (the engine username the product seated it as),
+     * or null for a draw or a game that hasn't ended. GameImpl.getWinner is
+     * a sentence for XMage's own client ("Player X is the winner", "Game is a
+     * draw"); the product needs the seat.
+     */
+    public String winnerName() {
+        if (!game.hasEnded() || game.isADraw()) {
+            return null;
+        }
+        for (Player p : game.getState().getPlayers().values()) {
+            if (p.hasWon()) {
+                return p.getName();
+            }
+        }
+        return null;
     }
 
     // ---- the listener (game thread) --------------------------------------
@@ -791,13 +839,26 @@ public final class GameHost {
         return out;
     }
 
-    /** Game-over flags and this seat's unread messages, on every result. */
+    /**
+     * Game-over flags and this seat's unread messages, on every result. An
+     * ended game is {@code game_over} with the winning seat's name in
+     * {@code winner}, or {@code draw}; a game whose thread died without
+     * ending is {@code engine_died} with the cause in {@code error}, and is
+     * not over — nothing was decided.
+     */
     private void finish(Seat seat, Map<String, Object> r) {
-        if (isOver()) {
+        if (game.hasEnded()) {
             r.put("game_over", true);
-            String winner = game.getWinner();
+            String winner = winnerName();
             if (winner != null) {
                 r.put("winner", winner);
+            } else if (game.isADraw()) {
+                r.put("draw", true);
+            }
+        } else if (threadDied()) {
+            r.put("engine_died", true);
+            if (gameError == null) {
+                r.put("error", "game thread stopped without ending the game");
             }
         }
         if (seat.player.hasLost()) {
