@@ -679,16 +679,26 @@ public final class Views {
         }
         if (perm.isToken()) {
             info.put("token", true);
-            // A token's art is keyed by its *printed* power/toughness (a 3/3
-            // and a 4/4 "Beast" are different prints), but `power`/`toughness`
-            // above are the current values, so an anthem or a +1/+1 counter
-            // would send the wrong signature. `getOriginal()` is the token as
-            // created, which carries the printed pair.
-            CardView asCreated = perm.getOriginal();
-            if (perm.isCreature() && asCreated != null) {
-                info.put("base_power", asCreated.getPower());
-                info.put("base_toughness", asCreated.getToughness());
-            }
+        }
+        // The *printed* pair beside the current one, `base_power` /
+        // `base_toughness`. `power`/`toughness` above are what the creature
+        // is now; a board that shows only that has nothing to say when a
+        // Seeker of Skybreak reads 1/2 under an opponent's Gravitational
+        // Shift (fullpod report 237c17a7e3), and token art is keyed by the
+        // printed pair (a 3/3 and a 4/4 "Beast" are different prints).
+        // `getOriginal()` is the token as created, or the card built without
+        // the game. That card is the wrong answer when the permanent is no
+        // longer that card: a Clone copying Bears would say 0/0, a morph its
+        // hidden face, a transformed or flipped card its front — so a card's
+        // pair is sent only while the permanent still wears the card's name
+        // and is neither a copy nor face down; no signal beats a wrong one.
+        CardView printed = perm.getOriginal();
+        boolean stillThatCard = perm.isToken()
+                || (!perm.isCopy() && !perm.isMutated() && !faceDown(perm)
+                && printed != null && Objects.equals(printed.getName(), perm.getName()));
+        if (perm.isCreature() && printed != null && stillThatCard) {
+            info.put("base_power", printed.getPower());
+            info.put("base_toughness", printed.getToughness());
         }
         // `original` is built without the game, so it never carries hints:
         // compare the rules alone, or every hinted permanent reads as modified.
@@ -738,7 +748,7 @@ public final class Views {
         if (perm.isCopy()) {
             info.put("copy", true);
         }
-        if (perm.isMorphed() || perm.isManifested() || perm.isDisguised() || perm.isCloaked()) {
+        if (faceDown(perm)) {
             info.put("face_down", true);
             info.put("face_down_kind", perm.isMorphed() ? "morph" : perm.isManifested() ? "manifest" : perm.isDisguised() ? "disguise" : "cloak");
         }
@@ -835,6 +845,10 @@ public final class Views {
      * without a choice (Sensei's Divining Top, an opponent's hand via Peek),
      * each named by the engine, for as long as it keeps them.
      */
+    private static boolean faceDown(PermanentView perm) {
+        return perm.isMorphed() || perm.isManifested() || perm.isDisguised() || perm.isCloaked();
+    }
+
     public List<Map<String, Object>> revealed(GameView gameView, Game game) {
         List<Map<String, Object>> out = new ArrayList<>();
         for (mage.view.RevealedView r : gameView.getRevealed()) {
