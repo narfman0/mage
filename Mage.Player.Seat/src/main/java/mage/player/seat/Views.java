@@ -488,7 +488,7 @@ public final class Views {
                 List<PermanentView> sorted = new ArrayList<>(player.getBattlefield().values());
                 sorted.sort(Comparator.<PermanentView, String>comparing(this::displayName).thenComparingInt(p -> sequence(p.getId())));
                 for (PermanentView perm : sorted) {
-                    Map<String, Object> entry = permanentInfo(perm, gameView);
+                    Map<String, Object> entry = permanentInfo(perm, gameView, game);
                     Map<String, Object> why = unlit.get(perm.getId());
                     if (why != null) {
                         entry.put("not_playable", why);
@@ -654,7 +654,7 @@ public final class Views {
         return info;
     }
 
-    private Map<String, Object> permanentInfo(PermanentView perm, GameView gameView) {
+    private Map<String, Object> permanentInfo(PermanentView perm, GameView gameView, Game game) {
         Map<String, Object> info = new HashMap<>();
         info.put("id", shortId(perm.getId()));
         info.put("name", displayName(perm));
@@ -686,19 +686,22 @@ public final class Views {
         // Seeker of Skybreak reads 1/2 under an opponent's Gravitational
         // Shift (fullpod report 237c17a7e3), and token art is keyed by the
         // printed pair (a 3/3 and a 4/4 "Beast" are different prints).
-        // `getOriginal()` is the token as created, or the card built without
-        // the game. That card is the wrong answer when the permanent is no
-        // longer that card: a Clone copying Bears would say 0/0, a morph its
-        // hidden face, a transformed or flipped card its front — so a card's
-        // pair is sent only while the permanent still wears the card's name
-        // and is neither a copy nor face down; no signal beats a wrong one.
-        CardView printed = perm.getOriginal();
-        boolean stillThatCard = perm.isToken()
-                || (!perm.isCopy() && !perm.isMutated() && !faceDown(perm)
-                && printed != null && Objects.equals(printed.getName(), perm.getName()));
-        if (perm.isCreature() && printed != null && stillThatCard) {
-            info.put("base_power", printed.getPower());
-            info.put("base_toughness", printed.getToughness());
+        // A token's pair is `getOriginal()`, the token as created. A card's
+        // is the card itself, read from the game: the view's `original` is
+        // built only for the permanents the viewer controls (XMage keeps a
+        // face-down card from its opponents that way), and an opponent's
+        // pumped creature is the number a player asks about most. That card
+        // is the wrong answer when the permanent is no longer that card: a
+        // Clone copying Bears would say 0/0, a morph its hidden face, a
+        // transformed or flipped card its front — so a card's pair is sent
+        // only while the permanent still wears the card's name and is
+        // neither a copy, mutated nor face down; no signal beats a wrong one.
+        if (perm.isCreature()) {
+            String[] printed = printedPowerToughness(perm, game);
+            if (printed != null) {
+                info.put("base_power", printed[0]);
+                info.put("base_toughness", printed[1]);
+            }
         }
         // `original` is built without the game, so it never carries hints:
         // compare the rules alone, or every hinted permanent reads as modified.
@@ -847,6 +850,24 @@ public final class Views {
      */
     private static boolean faceDown(PermanentView perm) {
         return perm.isMorphed() || perm.isManifested() || perm.isDisguised() || perm.isCloaked();
+    }
+
+    /** The printed power and toughness of a creature permanent, or null when
+     *  the permanent is no longer the card it was printed as (see permanentInfo). */
+    static String[] printedPowerToughness(PermanentView perm, Game game) {
+        if (perm.isToken()) {
+            CardView asCreated = perm.getOriginal();
+            return asCreated == null ? null : new String[]{asCreated.getPower(), asCreated.getToughness()};
+        }
+        if (perm.isCopy() || perm.isMutated() || faceDown(perm) || game == null) {
+            return null;
+        }
+        Card card = game.getCard(perm.getId());
+        if (card == null || !Objects.equals(card.getName(), perm.getName())
+                || card.getPower() == null || card.getToughness() == null) {
+            return null;
+        }
+        return new String[]{card.getPower().toString(), card.getToughness().toString()};
     }
 
     public List<Map<String, Object>> revealed(GameView gameView, Game game) {
