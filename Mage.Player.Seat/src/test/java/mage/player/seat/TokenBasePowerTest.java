@@ -23,7 +23,9 @@ import java.util.Map;
  * different prints), so the board sends `base_power` / `base_toughness` on a
  * creature token. A 3/3 Beast token under Ajani's emblem ("Creatures you
  * control get +2/+2") reads 5/5 now and 3/3 as created; a Grizzly Bears
- * beside it is a printed card, so it has the current pair only.
+ * beside it reads 4/4 now and 2/2 printed — the same pair on a card, so the
+ * board can say a number is not the printed one (PrintedPowerTest has the
+ * permanents that are no longer their card).
  */
 public class TokenBasePowerTest {
 
@@ -91,10 +93,11 @@ public class TokenBasePowerTest {
                     // As created, whatever the anthem is doing to it now.
                     Assert.assertEquals("3", beast.get("base_power"));
                     Assert.assertEquals("3", beast.get("base_toughness"));
-                    // A printed card is not a token: the current pair only.
+                    // A printed card carries its printed pair the same way.
                     Assert.assertNotNull("our Bears is on the board: " + board, bears);
-                    Assert.assertNull(bears.get("base_power"));
-                    Assert.assertNull(bears.get("base_toughness"));
+                    Assert.assertNull(bears.get("token"));
+                    Assert.assertEquals("2", bears.get("base_power"));
+                    Assert.assertEquals("2", bears.get("base_toughness"));
                     if ("5".equals(beast.get("power"))) { // the emblem has taken effect
                         Assert.assertEquals("5", beast.get("toughness"));
                         Assert.assertEquals("4", bears.get("power"));
