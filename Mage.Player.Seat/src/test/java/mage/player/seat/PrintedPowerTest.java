@@ -25,7 +25,9 @@ import java.util.Map;
  * has become a copy of Grizzly Bears is a 2/2 whose card says 3/3, and a
  * manifested Centaur Courser is a 2/2 whose card is hidden: both carry the
  * current pair only, so the board never colours a number against the wrong
- * print. The Bears beside them keeps its 2/2.
+ * print. The Bears beside them keeps its 2/2, and so does the opponent's
+ * Runeclaw Bear: the pair comes from the card in the game, not from the
+ * view's `original`, which XMage builds only for what the viewer controls.
  */
 public class PrintedPowerTest {
 
@@ -50,6 +52,13 @@ public class PrintedPowerTest {
             }
         }
         Assert.assertNotNull(you);
+        Player cpu = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("CPU".equals(p.getName())) {
+                cpu = p;
+            }
+        }
+        Assert.assertNotNull(cpu);
         List<Card> library = new ArrayList<>();
         for (int i = 0; i < 7; i++) {
             library.add(card("Forest"));
@@ -59,6 +68,12 @@ public class PrintedPowerTest {
         Card courser = card("Centaur Courser");
         game.cheat(you.getId(), library, List.of(),
                 List.of(new PutToBattlefieldInfo(bears, false), new PutToBattlefieldInfo(giant, false), new PutToBattlefieldInfo(courser, false)),
+                List.of(), List.of(), List.of());
+        List<Card> theirLibrary = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            theirLibrary.add(card("Forest"));
+        }
+        game.cheat(cpu.getId(), theirLibrary, List.of(), List.of(new PutToBattlefieldInfo(card("Runeclaw Bear"), false)),
                 List.of(), List.of(), List.of());
         host.start();
         try {
@@ -121,6 +136,20 @@ public class PrintedPowerTest {
                     Assert.assertEquals("manifest", faceDown.get("face_down_kind"));
                     Assert.assertNull("a face-down creature carries no printed pair: " + faceDown, faceDown.get("base_power"));
                     Assert.assertNull(faceDown.get("base_toughness"));
+                    // The opponent's creature, seen from our seat, carries its pair too.
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> theirs = ((List<Map<String, Object>>) d.get("board")).get(1);
+                    Map<String, Object> runeclaw = null;
+                    for (Object o : (List<?>) theirs.get("battlefield")) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> perm = (Map<String, Object>) o;
+                        if ("Runeclaw Bear".equals(perm.get("name"))) {
+                            runeclaw = perm;
+                        }
+                    }
+                    Assert.assertNotNull("the opponent's Bear is on the board: " + theirs, runeclaw);
+                    Assert.assertEquals("2", runeclaw.get("base_power"));
+                    Assert.assertEquals("2", runeclaw.get("base_toughness"));
                     return;
                 } else {
                     args = Map.of("choice", "no");
