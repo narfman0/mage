@@ -372,12 +372,15 @@ public class HumanPlayer extends PlayerImpl {
                     responseOpenedForAnswer = true;
                 }
                 try {
-                    // The callback may already have been answered before we got
-                    // here; in that case preserve the response instead of
-                    // clearing it and waiting again.
-                    if (!response.hasSyncResponse()
+                    // The window opened in prepareForResponse, before the query
+                    // was fired, so the answer — or a rollback's abort — may
+                    // already be here: a notifyAll that ran before this wait
+                    // is not coming again. Sleep only when nothing has arrived.
+                    // isAnswered, not "has a value": a cancel is a null UUID.
+                    if (!response.isAnswered()
                             && !response.getAsyncWantConcede()
-                            && !response.getAsyncWantCheat()) {
+                            && !response.getAsyncWantCheat()
+                            && !abort) {
                         response.wait(); // start waiting a response.notifyAll command from CALL thread (client answer)
                     }
                 } catch (InterruptedException ignore) {

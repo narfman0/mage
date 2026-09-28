@@ -30,6 +30,9 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
     private Integer responseInteger;
     private ManaType responseManaType;
     private UUID responseManaPlayerId;
+    // an answer landed in the open window, whatever it carried: a cancel is a
+    // null UUID or string, and the game thread must not sleep through it
+    private boolean answered;
 
     // async commands can income any time from network thread as signal,
     // must process it in game thread on any priority
@@ -73,6 +76,7 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
         this.responseInteger = response.responseInteger;
         this.responseManaType = response.responseManaType;
         this.responseManaPlayerId = response.responseManaPlayerId;
+        this.answered = response.answered;
         this.asyncWantConcede = response.asyncWantConcede;
         this.asyncWantCheat = response.asyncWantCheat;
     }
@@ -86,17 +90,18 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
         this.responseInteger = null;
         this.responseManaType = null;
         this.responseManaPlayerId = null;
+        this.answered = false;
         this.asyncWantConcede = null;
         this.asyncWantCheat = null;
     }
 
-    public boolean hasSyncResponse() {
-        return responseString != null
-                || responseUUID != null
-                || responseBoolean != null
-                || responseInteger != null
-                || responseManaType != null
-                || responseManaPlayerId != null;
+    /**
+     * An answer arrived since the window was opened ({@link #clear}), a
+     * cancel with nothing in it included — the game thread checks this before
+     * it sleeps, so an answer that came in early is used, not waited past.
+     */
+    public boolean isAnswered() {
+        return answered;
     }
 
     public String getActiveAction() {
@@ -118,6 +123,7 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
 
     public void setString(String newString) {
         this.responseString = newString;
+        this.answered = true;
     }
 
     public UUID getUUID() {
@@ -126,6 +132,7 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
 
     public void setUUID(UUID newUUID) {
         this.responseUUID = newUUID;
+        this.answered = true;
     }
 
     public Boolean getBoolean() {
@@ -134,6 +141,7 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
 
     public void setBoolean(Boolean newBoolean) {
         this.responseBoolean = newBoolean;
+        this.answered = true;
     }
 
     public Integer getInteger() {
@@ -142,6 +150,7 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
 
     public void setInteger(Integer newInteger) {
         this.responseInteger = newInteger;
+        this.answered = true;
     }
 
     public ManaType getManaType() {
@@ -150,6 +159,7 @@ public class PlayerResponse implements Serializable, Copyable<PlayerResponse> {
 
     public void setManaType(ManaType newManaType) {
         this.responseManaType = newManaType;
+        this.answered = true;
     }
 
     public UUID getManaPlayerId() {
