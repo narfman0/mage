@@ -156,10 +156,13 @@ public final class GameHost {
     // The XMage CPUs by engine name (SeatCpu, or an older snapshot's ComputerPlayer7).
     private final Map<String, mage.player.ai.ComputerPlayer6> cpus = new LinkedHashMap<>();
     // The per-window ceiling on CPU thinking (SeatCpu.Hooks.capFor): a window
-    // is the stretch between two questions to a seat; 0 = none.
+    // is the stretch between two answers a person gave — it ends when a seat's
+    // question is answered, not when it is asked, and a held answer (the
+    // server passing on the person's behalf) doesn't end it; 0 = none.
     private volatile long cpuWindowMs = 8_000;
     private final java.util.concurrent.atomic.AtomicLong windowSpentMs = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicInteger windowThinks = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger windowHeld = new java.util.concurrent.atomic.AtomicInteger();
     private volatile int windowTurn = -1;
 
     /** Once per JVM: the data collectors, so decisions land in server_game_events.jsonl when a game has a log dir. */
@@ -443,7 +446,6 @@ public final class GameHost {
         if (answerFromBatch(seat, e)) {
             return;
         }
-        endWindow(seat.name); // a seat is asked: the CPUs' window is over
         try {
             seat.deliver(renderer.render(game, seat.player, e, seq, seat.offerManaSources));
         } catch (RuntimeException ex) {
@@ -891,7 +893,7 @@ public final class GameHost {
             }
             int turn = game == null ? -1 : game.getTurnNum();
             if (turn != windowTurn) {
-                // A turn with no question to a seat in it (every person out) still ends a window.
+                // A turn with no answer from a seat in it (every person out) still ends a window.
                 windowTurn = turn;
                 endWindow(null);
             }
@@ -912,22 +914,31 @@ public final class GameHost {
     };
 
     /**
-     * The CPUs' window is over: a seat was asked (or the turn changed). One
+     * The CPUs' window is over: a seat answered (or the turn changed). One
      * record when anyone thought in it — how long the table waited on CPU
-     * thinking between two questions to a seat, the number the window ceiling
-     * bounds.
+     * thinking between two answers a person gave, the number the window
+     * ceiling bounds; {@code held} is how many held answers it ran through.
      */
-    private void endWindow(String askedSeat) {
+    private void endWindow(String answeredSeat) {
         long spent = windowSpentMs.getAndSet(0);
         int thinks = windowThinks.getAndSet(0);
+        int held = windowHeld.getAndSet(0);
         if (thinks > 0) {
             Map<String, Object> r = new LinkedHashMap<>();
             r.put("kind", "table_window");
-            r.put("seat", askedSeat);
+            r.put("seat", answeredSeat);
             r.put("ms", spent);
             r.put("thinks", thinks);
+            if (held > 0) {
+                r.put("held", held);
+            }
             perf(r);
         }
+    }
+
+    /** choose_action's {@code held}: true, or the strings "true"/"1". */
+    private static boolean isHeld(Object v) {
+        return Boolean.TRUE.equals(v) || "true".equals(String.valueOf(v)) || "1".equals(String.valueOf(v));
     }
 
     private void perf(Map<String, Object> record) {
@@ -1031,7 +1042,9 @@ public final class GameHost {
      * choose_action: choice (index, short id, yes/no), attackers, blockers,
      * amount, amounts, pile, text — plus {@code remember}, which answers and
      * tells the engine to answer this question itself from now on
-     * ({@link #rememberAnswer}).
+     * ({@link #rememberAnswer}), and {@code held}, which says nobody was
+     * asked: the server answered on the person's behalf (a "Pass until…"
+     * hold, a routine window it skips), so the CPUs' window keeps counting.
      */
     public Map<String, Object> chooseAction(String seatName, Map<String, Object> args) {
         Seat seat = seat(seatName);
@@ -1039,6 +1052,18 @@ public final class GameHost {
             Decision d = seat.pending();
             if (d == null) {
                 return error("no_pending_action", "No action is pending for " + seatName, false);
+            }
+            // The CPUs' window ends here, before the answer wakes the game
+            // thread to think again — unless the answer is `held`: given on the
+            // person's behalf (a "Pass until…" hold, a routine window the
+            // server skips), with nobody asked, so the window they are waiting
+            // through goes on and the ceiling keeps counting across a run of
+            // held passes (fullpod docs/engine.md "The CPU's think").
+            windowTurn = game.getTurnNum(); // an answer this turn: the first think's turn check has nothing to end
+            if (isHeld(args.get("held"))) {
+                windowHeld.incrementAndGet();
+            } else {
+                endWindow(seat.name);
             }
             String type = d.actionType();
             String taken;
