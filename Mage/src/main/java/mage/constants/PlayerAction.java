@@ -21,6 +21,7 @@ public enum PlayerAction {
     TRIGGER_AUTO_ORDER_ABILITY_LAST,
     TRIGGER_AUTO_ORDER_NAME_LAST,
     TRIGGER_AUTO_ORDER_RESET_ALL,
+    TRIGGER_AUTO_ORDER_REST, // fullpod: this trigger first, the rest of the run in the engine's order (Mage.Player.Seat)
     ROLLBACK_TURNS,
     UNDO,
     CONCEDE,

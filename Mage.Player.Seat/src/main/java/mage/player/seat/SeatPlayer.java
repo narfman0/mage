@@ -1,6 +1,7 @@
 package mage.player.seat;
 
 import mage.ConditionalMana;
+import mage.MageObject;
 import mage.Mana;
 import mage.abilities.Ability;
 import mage.abilities.ActivatedAbility;
@@ -24,6 +25,7 @@ import mage.cards.CardImpl;
 import mage.constants.AbilityType;
 import mage.abilities.costs.mana.ActivationManaAbilityStep;
 import mage.constants.ColoredManaSymbol;
+import mage.constants.PlayerAction;
 import mage.game.stack.Spell;
 import mage.constants.RangeOfInfluence;
 import mage.constants.Zone;
@@ -37,10 +39,12 @@ import mage.players.net.UserData;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import org.apache.log4j.Logger;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -66,6 +70,24 @@ public class SeatPlayer extends HumanPlayer {
      * answers a mana prompt by cancelling).
      */
     private boolean askWhenAmbiguous = false;
+
+    /**
+     * The triggers the last "Pick triggered ability" was asked about — the
+     * whole batch, the ones a memory already puts last included — so a
+     * {@link PlayerAction#TRIGGER_AUTO_ORDER_REST} answering it knows what
+     * "the rest" is. Written on the game thread, read on the host's.
+     */
+    private volatile Set<UUID> askedTriggers = Set.of();
+
+    /**
+     * The run "Auto-order" left to the seat: the triggers still waiting from
+     * the prompt it answered. While every trigger the engine asks about is
+     * one of these, the seat puts them on the stack in the engine's own order
+     * (a remembered first/last still honoured) and asks nothing; the first
+     * batch with a trigger it was not asked about ends the run and is asked
+     * as usual. Null between runs.
+     */
+    private volatile Set<UUID> orderRest = null;
 
     public SeatPlayer(String name, RangeOfInfluence range) {
         super(name, range, 0);
@@ -122,6 +144,8 @@ public class SeatPlayer extends HumanPlayer {
         super(player);
         this.autoPay = player.autoPay;
         this.askWhenAmbiguous = player.askWhenAmbiguous;
+        this.askedTriggers = player.askedTriggers;
+        this.orderRest = player.orderRest;
     }
 
     @Override
@@ -135,6 +159,82 @@ public class SeatPlayer extends HumanPlayer {
 
     public void setAskWhenAmbiguous(boolean ask) {
         this.askWhenAmbiguous = ask;
+    }
+
+    /**
+     * "Pick triggered ability (goes to the stack first)", once per trigger
+     * still waiting, is XMage's question ({@link HumanPlayer}: a remembered
+     * ability or rules text goes first or last without asking; identical
+     * triggers are ordered without asking only when <em>every</em> one still
+     * waiting reads the same — one different text and each is a question,
+     * the identical ones too, which is fifty-three questions for a landfall
+     * board returning five lands). "Auto-order" is one answer that orders the
+     * run: {@link PlayerAction#TRIGGER_AUTO_ORDER_REST} on the pending prompt
+     * arms {@link #orderRest} with what it asked about, and every question
+     * after it about only those triggers is answered here, in the engine's
+     * order, with no query fired — so nothing is asked, recorded or waited
+     * for, exactly as a remembered order.
+     */
+    @Override
+    public TriggeredAbility chooseTriggeredAbility(List<TriggeredAbility> abilities, Game game) {
+        Set<UUID> rest = orderRest;
+        if (rest != null) {
+            boolean sameRun = !abilities.isEmpty() && abilities.stream().allMatch(a -> rest.contains(a.getId()));
+            if (sameRun) {
+                return firstInRememberedOrder(abilities, game);
+            }
+            orderRest = null;
+        }
+        Set<UUID> asked = new HashSet<>();
+        for (TriggeredAbility a : abilities) {
+            asked.add(a.getId());
+        }
+        askedTriggers = asked;
+        return super.chooseTriggeredAbility(abilities, game);
+    }
+
+    /**
+     * The trigger XMage's own dialog would put on the stack first when nobody
+     * chooses: one remembered first (by ability or by rules text), else the
+     * first not remembered last, else the first. The engine's list order is
+     * the order the triggers were put up in.
+     */
+    private TriggeredAbility firstInRememberedOrder(List<TriggeredAbility> abilities, Game game) {
+        TriggeredAbility first = null;
+        for (TriggeredAbility ability : abilities) {
+            if (triggerAutoOrderAbilityFirst.contains(ability.getOriginalId())) {
+                return ability;
+            }
+            MageObject object = game.getObject(ability.getSourceId());
+            String rule = ability.getRule(object != null ? object.getName() : null);
+            if (triggerAutoOrderNameFirst.contains(rule)) {
+                return ability;
+            }
+            boolean last = triggerAutoOrderAbilityLast.contains(ability.getOriginalId()) || triggerAutoOrderNameLast.contains(rule);
+            if (!last && first == null) {
+                first = ability;
+            }
+        }
+        return first != null ? first : abilities.get(0);
+    }
+
+    /**
+     * {@link PlayerAction#TRIGGER_AUTO_ORDER_REST} (sent by the host for a
+     * {@code remember: "rest"} answer, and by the replay feeder for a resume)
+     * arms the run on the prompt now pending; the trigger-order reset that
+     * forgets every remembered order forgets the run too. Everything else is
+     * XMage's.
+     */
+    @Override
+    public void sendPlayerAction(PlayerAction playerAction, Game game, Object data) {
+        if (playerAction == PlayerAction.TRIGGER_AUTO_ORDER_REST) {
+            orderRest = askedTriggers;
+            return;
+        }
+        if (playerAction == PlayerAction.TRIGGER_AUTO_ORDER_RESET_ALL) {
+            orderRest = null;
+        }
+        super.sendPlayerAction(playerAction, game, data);
     }
 
     /**
