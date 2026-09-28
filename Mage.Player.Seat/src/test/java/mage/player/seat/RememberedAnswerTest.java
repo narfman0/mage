@@ -206,6 +206,99 @@ public class RememberedAnswerTest {
         }
     }
 
+    /**
+     * "Auto-order" (docs/board-ui.md "Trigger order: Auto-order"): two Soul
+     * Wardens and a Soul's Attendant trigger on one Bear — three triggers of
+     * two texts, so XMage asks about each in turn (three, then two; the last
+     * one goes up by itself). One answer with {@code remember=rest} orders
+     * the whole run: nothing more is asked, every trigger resolves. The run
+     * is not a memory — the second Bear's triggers are asked about again,
+     * twice, when ordered by hand.
+     */
+    @Test(timeout = 300_000)
+    public void anAutoOrderAnswerOrdersTheRestOfTheRun() throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("order-rest", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), false));
+        Game game = host.game();
+        Player you = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("You".equals(p.getName())) {
+                you = p;
+            }
+        }
+        Assert.assertNotNull(you);
+        List<PutToBattlefieldInfo> perms = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            perms.add(new PutToBattlefieldInfo(card("Forest"), false));
+        }
+        perms.add(new PutToBattlefieldInfo(card("Soul Warden"), false));
+        perms.add(new PutToBattlefieldInfo(card("Soul Warden"), false));
+        perms.add(new PutToBattlefieldInfo(card("Soul's Attendant"), false));
+        List<Card> hand = new ArrayList<>();
+        for (int i = 0; i < 2; i++) {
+            hand.add(card("Grizzly Bears"));
+        }
+        List<Card> library = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            library.add(card("Forest"));
+        }
+        game.cheat(you.getId(), library, hand, perms, List.of(), List.of(), List.of());
+        host.start();
+        int casts = 0;
+        List<Integer> offered = new ArrayList<>();
+        try {
+            for (int i = 0; i < 400; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                Assert.assertFalse("game over too soon: " + d, Boolean.TRUE.equals(d.get("game_over")));
+                Assert.assertNull("render error", d.get("error"));
+                String type = String.valueOf(d.get("action_type"));
+                String message = String.valueOf(d.get("message"));
+                Map<String, Object> args = new HashMap<>();
+                if ("GAME_TARGET".equals(type) && message.contains("starting player")) {
+                    args.put("choice", indexOfYou(d));
+                } else if ("GAME_TARGET".equals(type) && isTriggerOrder(d)) {
+                    offered.add(ScriptedSeat.choices(d).size());
+                    args.put("choice", "0");
+                    if (offered.size() == 1) {
+                        Assert.assertEquals("the first Bear: all three triggers up for ordering", 3, ScriptedSeat.choices(d).size());
+                        args.put("remember", "rest");
+                    }
+                    Assert.assertTrue("the second Bear is ordered by hand: three asked, then two, never more", offered.size() <= 3);
+                } else if ("GAME_ASK".equals(type) && message.contains(GAIN)) {
+                    args.put("choice", "yes");
+                } else if ("GAME_SELECT".equals(type) && "select".equals(d.get("response_type"))
+                        && d.get("combat_phase") == null && casts < 2 && castIndex(d) != null) {
+                    if (casts == 1) {
+                        Assert.assertEquals("the first Bear's run was one question", List.of(3), offered);
+                        Assert.assertEquals("and every trigger resolved all the same",
+                                23, ((Number) GameHostTest.board(d).get("life")).intValue());
+                    }
+                    casts++;
+                    args.put("choice", castIndex(d));
+                } else if (casts >= 2 && offered.size() == 3 && "GAME_SELECT".equals(type) && "select".equals(d.get("response_type"))
+                        && GameHostTest.board(d).get("life") != null
+                        && ((Number) GameHostTest.board(d).get("life")).intValue() >= 26) {
+                    // The run ended with its prompt: the second Bear asked twice
+                    // (three triggers, then two), as XMage does by hand.
+                    Assert.assertEquals(List.of(3, 3, 2), offered);
+                    return;
+                } else if ("GAME_TARGET".equals(type) && Boolean.TRUE.equals(d.get("required"))) {
+                    args.put("choice", discardIndex(d));
+                } else {
+                    args.put("choice", "no");
+                }
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+                if ("rest".equals(args.get("remember"))) {
+                    Assert.assertEquals("0_remembered", answer.get("action_taken"));
+                }
+            }
+            throw new AssertionError("never cast the two Bears (casts=" + casts + ", offered=" + offered + ")");
+        } finally {
+            host.end();
+        }
+    }
+
     private static boolean isTriggerOrder(Map<String, Object> d) {
         List<Map<String, Object>> choices = ScriptedSeat.choices(d);
         return !choices.isEmpty() && choices.stream().allMatch(c -> "ability".equals(c.get("target_type")));

@@ -267,10 +267,14 @@ public class ReplayFeederCollector extends EmptyDataCollector {
      * "Always answer this the same way", as the recorded decision carried it
      * ({@code response.remember}): a yes/no by the asking ability
      * ({@code ability}) or by the question ({@code text}), a trigger ordered
-     * {@code first} or {@code last}. The key is built from the <em>live</em>
-     * query — an ability's id is new every game — so only the scope is
-     * recorded. A replacement effect's memory needs nothing here: its answer
-     * is the {@code #}-prefixed key, replayed as the string it is.
+     * {@code first} or {@code last}, or a trigger run ordered by the seat
+     * from here on ({@code rest}: the answer goes first and the seat puts
+     * the triggers it was asked about on the stack in the engine's own order,
+     * asking nothing more — a seat-level action the player interprets). The
+     * key is built from the <em>live</em> query — an ability's id is new
+     * every game — so only the scope is recorded. A replacement effect's
+     * memory needs nothing here: its answer is the {@code #}-prefixed key,
+     * replayed as the string it is.
      */
     private static void applyRemember(Game game, Player player, PlayerQueryEvent event, ReplayScript.Decision d) {
         String scope = d.remember();
@@ -301,6 +305,9 @@ public class ReplayFeederCollector extends EmptyDataCollector {
                         ? PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_FIRST
                         : PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_LAST, game, ability);
             }
+        } else if ("rest".equals(scope)) {
+            // Armed on the live prompt: the player knows what it asked about.
+            player.sendPlayerAction(PlayerAction.TRIGGER_AUTO_ORDER_REST, game, null);
         }
     }
 
