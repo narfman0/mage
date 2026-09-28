@@ -1154,7 +1154,11 @@ public final class GameHost {
      *   <li>a yes/no ask: {@code ability} keys on the asking ability and the
      *       question, {@code text} on the question alone (any card asking it);</li>
      *   <li>a trigger-order pick: {@code first} / {@code last} puts that
-     *       ability first or last every time it triggers with others;</li>
+     *       ability first or last every time it triggers with others;
+     *       {@code rest} puts it first now and leaves the rest of this run
+     *       to the seat, in the engine's order, with no further question
+     *       ({@link SeatPlayer#chooseTriggeredAbility}) — "Auto-order" as
+     *       one round trip;</li>
      *   <li>the replacement-effect order: {@code answer} is the engine's own
      *       "Remember answer" special, sent as a {@code #}-prefixed key.</li>
      * </ul>
@@ -1189,14 +1193,18 @@ public final class GameHost {
             return null;
         }
         if (d.event.getQueryType() == PlayerQueryEvent.QueryType.PICK_ABILITY) {
-            if (!"first".equals(remember) && !"last".equals(remember)) {
-                return error("invalid_choice", "remember= on a trigger-order question is 'first' or 'last'", true);
+            if (!"first".equals(remember) && !"last".equals(remember) && !"rest".equals(remember)) {
+                return error("invalid_choice", "remember= on a trigger-order question is 'first', 'last' or 'rest'", true);
             }
             UUID ability = triggerOf(d, choice);
             if (ability == null) {
                 return error("invalid_choice", "'" + choice + "' is not one of the triggers", true);
             }
             recordRemember(seat, remember);
+            if ("rest".equals(remember)) {
+                seat.player.sendPlayerAction(PlayerAction.TRIGGER_AUTO_ORDER_REST, game, null);
+                return null;
+            }
             seat.player.sendPlayerAction("first".equals(remember)
                     ? PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_FIRST
                     : PlayerAction.TRIGGER_AUTO_ORDER_ABILITY_LAST, game, ability);
@@ -1594,9 +1602,10 @@ public final class GameHost {
 
     /**
      * Forgets every answer this seat told the engine to keep giving —
-     * remembered yes/no answers, trigger order, the replacement-effect
-     * choice — so every question is asked again (docs/board-ui.md
-     * "Remembered answers"). XMage's own three reset actions.
+     * remembered yes/no answers, trigger order (an "Auto-order" run under
+     * way included), the replacement-effect choice — so every question is
+     * asked again (docs/board-ui.md "Remembered answers"). XMage's own three
+     * reset actions.
      */
     public void forgetAnswers(String seatName) {
         Seat seat = seat(seatName);
