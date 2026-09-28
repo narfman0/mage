@@ -1,6 +1,7 @@
 package mage.player.seat;
 
 import mage.cards.Card;
+import mage.constants.AbilityType;
 import mage.constants.CardType;
 import mage.constants.CommanderCardType;
 import mage.constants.Zone;
@@ -372,6 +373,12 @@ public final class Views {
                 item.put("id", shortId(card.getId()));
             }
             item.put("name", displayName(card));
+            // What put it there: a spell cast, an ability activated, or a
+            // trigger the game itself added. A held pass through a stack
+            // (fullpod docs/board-ui.md "Hold Pass") reads a new spell or
+            // activation as someone responding and a new trigger as the
+            // stack resolving, so the item says which it is.
+            item.put("kind", stackKind(card));
             if (card instanceof StackAbilityView sav) {
                 if (sav.getSourceCard() != null) {
                     item.put("source_card", displayName(sav.getSourceCard()));
@@ -407,6 +414,15 @@ public final class Views {
             stack.add(item);
         }
         return stack;
+    }
+
+    /** {@code spell} for a spell (or a copy of one), {@code triggered} for a triggered ability, {@code activated} for any other ability. */
+    static String stackKind(CardView card) {
+        if (!(card instanceof StackAbilityView)) {
+            return "spell";
+        }
+        AbilityType type = card.getAbilityType();
+        return type != null && type.isTriggeredAbility() ? "triggered" : "activated";
     }
 
     // ---- board ----------------------------------------------------------
