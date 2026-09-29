@@ -5,6 +5,8 @@ import mage.cards.Card;
 import mage.filter.FilterCard;
 import mage.util.Copyable;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.*;
 import java.util.Map.Entry;
@@ -15,18 +17,51 @@ import java.util.stream.Collectors;
  */
 public class Exile implements Serializable, Copyable<Exile> {
 
-    private static final UUID PERMANENT = UUID.randomUUID();
+    // The permanent zone's key is the same in every process. It was drawn at
+    // random once per JVM, and the key is serialized with the map while the
+    // static is not: a game saved by one process and read by another found no
+    // permanent exile, and the first exile with no named zone threw.
+    private static final UUID PERMANENT = UUID.fromString("70988603-9042-4aae-9d9a-b61d48ae2cc4");
+    private static final String PERMANENT_NAME = "Permanent";
 
     private final Map<UUID, ExileZone> exileZones = new LinkedHashMap<>();
 
     public Exile() {
-        createZone(PERMANENT, "Permanent");
+        createZone(PERMANENT, PERMANENT_NAME);
     }
 
     protected Exile(final Exile exile) {
         for (Entry<UUID, ExileZone> entry : exile.exileZones.entrySet()) {
             exileZones.put(entry.getKey(), entry.getValue().copy());
         }
+    }
+
+    /**
+     * A game saved before the key was constant has its permanent zone under
+     * the key of the process that wrote it: put that zone (found by its name)
+     * back under {@link #PERMANENT}, keeping its cards and the zones' order,
+     * or start an empty one if there is none.
+     */
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        if (exileZones.containsKey(PERMANENT)) {
+            return;
+        }
+        String permanentName = PERMANENT_NAME + " - Exile";
+        ExileZone permanent = new ExileZone(PERMANENT, permanentName);
+        Map<UUID, ExileZone> others = new LinkedHashMap<>();
+        boolean found = false;
+        for (Entry<UUID, ExileZone> entry : exileZones.entrySet()) {
+            if (!found && permanentName.equals(entry.getValue().getName())) {
+                permanent.addAll(entry.getValue());
+                found = true;
+            } else {
+                others.put(entry.getKey(), entry.getValue());
+            }
+        }
+        exileZones.clear();
+        exileZones.put(PERMANENT, permanent);
+        exileZones.putAll(others);
     }
 
     public Collection<ExileZone> getExileZones() {

@@ -6,11 +6,22 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import mage.game.Exile;
+import mage.game.ExileZone;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InvalidClassException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Snapshot resume (Snapshot, GameHost's policy): a game against the CPU,
@@ -203,5 +214,139 @@ public class SnapshotResumeTest {
         } catch (IllegalArgumentException expected) {
             Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("no player named Nobody"));
         }
+    }
+
+    // ---- a board saved by another engine process (fullpod issue #22) ----
+    //
+    // Exile's permanent zone is keyed by a UUID; it used to be drawn at random
+    // once per JVM, so a snapshot read by the next process had its permanent
+    // exile under a key nobody asked for, and the first plain exile after the
+    // resume threw. The fixture is such a board: the path-and-plains deck
+    // against the bears, written at the first question of turn 2 by another
+    // process whose permanent zone had a key of its own. Every resume above
+    // happens in the JVM that wrote the file, where the key always matched.
+
+    static final String PATHS = "src/test/resources/decks/path_plains.dck";
+    static final String FOREIGN_FIXTURE = "src/test/resources/snapshots/foreign_permanent_exile.bin";
+
+    private static GameHost.Config foreignConfig(Path logDir, String cpuKind, String snapshotFrom) {
+        return new GameHost.Config("foreign", "duel", 7L, logDir.toString(),
+                List.of(new GameHost.SeatSpec("You", "seat", PATHS, 0), new GameHost.SeatSpec("CPU", cpuKind, BEARS, 6)),
+                false, null, 0, 0, "host", snapshotFrom, false);
+    }
+
+    /** Exile's zones and the key its permanent zone has in this JVM. */
+    @SuppressWarnings("unchecked")
+    private static Map<UUID, ExileZone> zones(Exile exile) throws ReflectiveOperationException {
+        Field f = Exile.class.getDeclaredField("exileZones");
+        f.setAccessible(true);
+        return (Map<UUID, ExileZone>) f.get(exile);
+    }
+
+    private static UUID permanentKey() throws ReflectiveOperationException {
+        Field f = Exile.class.getDeclaredField("PERMANENT");
+        f.setAccessible(true);
+        return (UUID) f.get(null);
+    }
+
+    /** Puts the permanent zone under {@code key}, where another process's Exile had it; the order stays. */
+    private static void rekeyPermanent(Exile exile, UUID key) throws ReflectiveOperationException {
+        UUID ours = permanentKey();
+        Map<UUID, ExileZone> zones = zones(exile);
+        Map<UUID, ExileZone> moved = new LinkedHashMap<>();
+        for (Map.Entry<UUID, ExileZone> e : zones.entrySet()) {
+            if (e.getKey().equals(ours)) {
+                ExileZone zone = new ExileZone(key, e.getValue().getName());
+                zone.addAll(e.getValue());
+                moved.put(key, zone);
+            } else {
+                moved.put(e.getKey(), e.getValue());
+            }
+        }
+        zones.clear();
+        zones.putAll(moved);
+    }
+
+    private static Exile roundTrip(Exile exile) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(exile);
+        }
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            return (Exile) in.readObject();
+        }
+    }
+
+    /**
+     * Re-records the fixture: {@code mvn test -pl Mage.Player.Seat
+     * -Dtest=SnapshotResumeTest#recordForeignFixture -Dfullpod.recordForeignFixture=true}.
+     * Needed only when a class the game serializes changed shape (a pin
+     * refresh, a fork commit that adds a field) and the resume test says the
+     * fixture no longer reads. The permanent zone is put under a random key
+     * before the write, which is what a process from before the constant
+     * key wrote, so the fixture keeps testing the heal on read.
+     */
+    @Test(timeout = 300_000)
+    public void recordForeignFixture() throws Exception {
+        org.junit.Assume.assumeTrue("records only on request", Boolean.getBoolean("fullpod.recordForeignFixture"));
+        Path logDir = Files.createTempDirectory("snap-rec");
+        GameHost host = new GameHost(foreignConfig(logDir, "cpu", null));
+        ScriptedSeat script = new ScriptedSeat();
+        host.start();
+        playTo(host, script, "You", 2);
+        rekeyPermanent(host.game().getExile(), UUID.randomUUID());
+        long bytes = Snapshot.write(host.game(), Path.of(FOREIGN_FIXTURE));
+        LOG.info("recorded " + FOREIGN_FIXTURE + " (" + bytes + " bytes)");
+        host.end();
+    }
+
+    @Test(timeout = 300_000)
+    public void aBoardSavedByAnotherProcessStillHasItsPermanentExile() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-foreign");
+        GameHost h2;
+        try {
+            h2 = new GameHost(foreignConfig(logDir, "seat", Path.of(FOREIGN_FIXTURE).toAbsolutePath().toString()));
+        } catch (InvalidClassException ex) {
+            throw new AssertionError("the fixture no longer reads (a serialized class changed shape): "
+                    + "re-record it with recordForeignFixture's command. " + ex, ex);
+        }
+        Assert.assertTrue(h2.resumed());
+        Assert.assertEquals(List.of("CPU"), h2.swapped());
+        Assert.assertNotNull("the permanent exile after the resume", h2.game().getExile().getPermanentExile());
+        h2.start();
+        // Both seats scripted: the bears come down and You's Paths exile them,
+        // each a plain exile into the permanent zone.
+        ScriptedSeat both = new ScriptedSeat();
+        playOn(h2, both, List.of("You", "CPU"), 8);
+        ExileZone permanent = h2.game().getExile().getPermanentExile();
+        Assert.assertNotNull(permanent);
+        Assert.assertFalse("a Path to Exile resolved into the permanent exile", permanent.isEmpty());
+        for (String line : h2.logLines()) {
+            Assert.assertFalse(line, line.contains("Auto-restored") || line.contains("game error"));
+        }
+        h2.end();
+    }
+
+    @Test
+    public void anExileUnderAForeignKeyIsHealedOnRead() throws Exception {
+        UUID card = UUID.randomUUID();
+        UUID named = UUID.randomUUID();
+        Exile exile = new Exile();
+        exile.createZone(named, "Augury");
+        exile.getPermanentExile().add(card);
+        rekeyPermanent(exile, UUID.randomUUID());
+        Assert.assertNull("the other process's key", exile.getPermanentExile());
+
+        Exile healed = roundTrip(exile);
+        ExileZone permanent = healed.getPermanentExile();
+        Assert.assertNotNull("re-keyed on read", permanent);
+        Assert.assertEquals(permanentKey(), permanent.getId());
+        Assert.assertEquals("its cards come along", List.of(card), new ArrayList<>(permanent));
+        Assert.assertEquals("and nothing else moved", List.of(permanentKey(), named), new ArrayList<>(zones(healed).keySet()));
+
+        // No zone of that name at all: an empty one, so the next exile has somewhere to go.
+        Exile none = new Exile();
+        zones(none).clear();
+        Assert.assertNotNull(roundTrip(none).getPermanentExile());
     }
 }
