@@ -148,6 +148,25 @@ public class GameHostTest {
     }
 
     /**
+     * The host addresses a seat by its name, so two seats with one name are
+     * refused when the game is made (fullpod issue #24) — two seats, or a seat
+     * and the CPU — instead of the second overwriting the first and the first
+     * never being asked anything.
+     */
+    @Test(timeout = 60_000)
+    public void twoSeatsWithOneNameAreRefused() throws Exception {
+        for (String otherKind : List.of("seat", "cpu")) {
+            try {
+                new GameHost(new GameHost.Config("twins", "duel", 3L, null,
+                        List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("You", otherKind, BEARS, 6)), false));
+                Assert.fail("two seats named You were made (" + otherKind + ")");
+            } catch (IllegalArgumentException expected) {
+                Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("two seats are named You"));
+            }
+        }
+    }
+
+    /**
      * A game thread that dies (an OutOfMemoryError in GameState.copy, report
      * fa5cec13dd) is not a game that ended: no game_over, no winner, no draw
      * — XMage's getWinner() says "Game is a draw" for any game without a
