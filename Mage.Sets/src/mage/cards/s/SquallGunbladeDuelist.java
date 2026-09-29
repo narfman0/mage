@@ -1,12 +1,14 @@
 package mage.cards.s;
 
 import mage.MageInt;
+import mage.MageObject;
 import mage.abilities.Ability;
 import mage.abilities.common.AsEntersBattlefieldAbility;
 import mage.abilities.common.AttacksPlayerWithCreaturesTriggeredAbility;
 import mage.abilities.condition.Condition;
 import mage.abilities.effects.OneShotEffect;
 import mage.abilities.keyword.FirstStrikeAbility;
+import mage.cards.Card;
 import mage.cards.CardImpl;
 import mage.cards.CardSetInfo;
 import mage.constants.*;
@@ -16,7 +18,11 @@ import mage.game.permanent.Permanent;
 import mage.players.Player;
 import mage.util.CardUtil;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -112,7 +118,10 @@ class SquallGunbladeDuelistChooseEffect extends OneShotEffect {
         if (player == null) {
             return false;
         }
-        int number = player.getAmount(0, Integer.MAX_VALUE, "Choose a number", source, game);
+        // AI hint
+        int number = player.isComputer()
+                ? chooseNumberAI(player, source, game)
+                : player.getAmount(0, Integer.MAX_VALUE, "Choose a number", source, game);
         game.getState().setValue(CardUtil.getObjectZoneString(
                 "chosenNumber", source.getSourceId(), game,
                 game.getState().getZoneChangeCounter(source.getSourceId()), false
@@ -123,6 +132,46 @@ class SquallGunbladeDuelistChooseEffect extends OneShotEffect {
             game.informPlayers(permanent.getLogName() + ", chosen number: " + number);
         }
         return true;
+    }
+
+    /**
+     * The power or toughness most common among its own creatures (they are the attackers that trigger it): those
+     * on the battlefield, Squall itself and the creature cards in its hand, each counting a value once. Ties go to
+     * the higher value.
+     */
+    static int chooseNumberAI(Player player, Ability source, Game game) {
+        Map<Integer, Integer> seen = new HashMap<>();
+        List<MageObject> creatures = new ArrayList<>();
+        creatures.addAll(game.getBattlefield().getAllActivePermanents(
+                StaticFilters.FILTER_PERMANENT_CREATURE, player.getId(), game));
+        Permanent squall = game.getPermanentEntering(source.getSourceId());
+        if (squall != null && creatures.stream().noneMatch(creature -> creature.getId().equals(squall.getId()))) {
+            creatures.add(squall);
+        }
+        for (Card card : player.getHand().getCards(game)) {
+            if (card.isCreature(game)) {
+                creatures.add(card);
+            }
+        }
+        for (MageObject creature : creatures) {
+            int power = creature.getPower().getValue();
+            int toughness = creature.getToughness().getValue();
+            if (power > 0) {
+                seen.merge(power, 1, Integer::sum);
+            }
+            if (toughness > 0 && toughness != power) {
+                seen.merge(toughness, 1, Integer::sum);
+            }
+        }
+        int best = 3;
+        int bestCount = 0;
+        for (Map.Entry<Integer, Integer> entry : seen.entrySet()) {
+            if (entry.getValue() > bestCount || (entry.getValue() == bestCount && entry.getKey() > best)) {
+                best = entry.getKey();
+                bestCount = entry.getValue();
+            }
+        }
+        return best;
     }
 }
 

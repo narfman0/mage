@@ -8,6 +8,7 @@ import mage.abilities.effects.OneShotEffect;
 import mage.abilities.effects.common.DrawCardSourceControllerEffect;
 import mage.abilities.effects.common.LoseLifeTargetEffect;
 import mage.abilities.keyword.FlyingAbility;
+import mage.cards.Card;
 import mage.cards.CardImpl;
 import mage.cards.CardSetInfo;
 import mage.constants.*;
@@ -18,6 +19,7 @@ import mage.game.Game;
 import mage.game.permanent.Permanent;
 import mage.game.stack.StackObject;
 import mage.players.Player;
+import mage.util.RandomUtil;
 
 import java.util.UUID;
 
@@ -109,7 +111,10 @@ class TalionTheKindlyLordEffect extends OneShotEffect {
         if (controller == null) {
             return true;
         }
-        int numberChoice = controller.getAmount(1, 10, "Choose a number.", source, game);
+        // AI hint
+        int numberChoice = controller.isComputer()
+                ? chooseNumberAI(controller, game)
+                : controller.getAmount(1, 10, "Choose a number.", source, game);
         game.getState().setValue("chosenNumber_" + source.getSourceId()
                 + '_' + source.getStackMomentSourceZCC(), numberChoice);
         Permanent permanent = game.getPermanentEntering(source.getSourceId());
@@ -118,5 +123,43 @@ class TalionTheKindlyLordEffect extends OneShotEffect {
             game.informPlayers(permanent.getLogName() + ", chosen number: " + numberChoice);
         }
         return true;
+    }
+
+    /**
+     * The mana value its opponents play most: the one seen most often among their nonland permanents and the
+     * nonland cards in their graveyards (the spells they have cast). With nothing seen yet, 2 or 3, the most common
+     * mana values in a deck.
+     */
+    static int chooseNumberAI(Player controller, Game game) {
+        int[] seen = new int[11];
+        for (UUID opponentId : game.getOpponents(controller.getId())) {
+            Player opponent = game.getPlayer(opponentId);
+            if (opponent == null) {
+                continue;
+            }
+            for (Permanent permanent : game.getBattlefield().getAllActivePermanents(opponentId)) {
+                if (!permanent.isLand(game)) {
+                    count(seen, permanent.getManaValue());
+                }
+            }
+            for (Card card : opponent.getGraveyard().getCards(game)) {
+                if (!card.isLand(game)) {
+                    count(seen, card.getManaValue());
+                }
+            }
+        }
+        int best = 0;
+        for (int number = 1; number <= 10; number++) {
+            if (seen[number] > seen[best]) {
+                best = number;
+            }
+        }
+        return best > 0 ? best : 2 + RandomUtil.nextInt(2);
+    }
+
+    private static void count(int[] seen, int manaValue) {
+        if (manaValue >= 1 && manaValue <= 10) {
+            seen[manaValue]++;
+        }
     }
 }
