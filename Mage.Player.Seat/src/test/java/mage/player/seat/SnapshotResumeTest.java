@@ -346,7 +346,7 @@ public class SnapshotResumeTest {
     }
 
     @Test(timeout = 300_000)
-    public void aSeatCannotBecomeTheCpuAndEverySeatMustBeNamed() throws Exception {
+    public void aSeatCannotBecomeTheCpuAndEverySeatMustBeNamedOnce() throws Exception {
         Path logDir = Files.createTempDirectory("snap-e");
         GameHost host = new GameHost(config("refuse", logDir, "cpu", null));
         ScriptedSeat script = new ScriptedSeat();
@@ -379,6 +379,17 @@ public class SnapshotResumeTest {
             Assert.fail("an unknown name was seated");
         } catch (IllegalArgumentException expected) {
             Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("no player named Nobody"));
+        }
+        // Two seats under one name would both be matched to one saved player,
+        // and the guard above would still pass (fullpod issue #24).
+        try {
+            new GameHost(new GameHost.Config("refuse", "duel", 7L, logDir2.toString(),
+                    List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("You", "seat", BEARS, 0),
+                            new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)),
+                    false, null, 0, 0, "host", from, false));
+            Assert.fail("two seats named You were resumed");
+        } catch (IllegalArgumentException expected) {
+            Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("two seats are named You"));
         }
     }
 
