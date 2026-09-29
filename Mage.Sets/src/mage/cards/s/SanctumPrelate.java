@@ -7,6 +7,7 @@ import mage.abilities.common.AsEntersBattlefieldAbility;
 import mage.abilities.common.SimpleStaticAbility;
 import mage.abilities.effects.ContinuousRuleModifyingEffectImpl;
 import mage.abilities.effects.OneShotEffect;
+import mage.cards.Card;
 import mage.cards.CardImpl;
 import mage.cards.CardSetInfo;
 import mage.constants.*;
@@ -62,7 +63,10 @@ class ChooseNumberEffect extends OneShotEffect {
     public boolean apply(Game game, Ability source) {
         Player controller = game.getPlayer(source.getControllerId());
         if (controller != null) {
-            int numberChoice = controller.getAmount(0, Integer.MAX_VALUE, "Choose a number (mana cost to restrict)", source, game);
+            // AI hint
+            int numberChoice = controller.isComputer()
+                    ? chooseNumberAI(controller, game)
+                    : controller.getAmount(0, Integer.MAX_VALUE, "Choose a number (mana cost to restrict)", source, game);
             game.getState().setValue(source.getSourceId().toString(), numberChoice);
 
             Permanent permanent = game.getPermanentEntering(source.getSourceId());
@@ -73,6 +77,60 @@ class ChooseNumberEffect extends OneShotEffect {
             }
         }
         return true;
+    }
+
+    /**
+     * The noncreature mana value that hurts its opponents most and itself least. Each value from 0 to 10 scores
+     * the noncreature spells its opponents have shown at it (nonland, noncreature permanents on the battlefield and
+     * cards in their graveyards) minus its own noncreature spells at it (hand and library). Ties go to the value
+     * nearest 2, the commonest mana value for cheap interaction.
+     */
+    static int chooseNumberAI(Player controller, Game game) {
+        int[] score = new int[11];
+        for (UUID opponentId : game.getOpponents(controller.getId())) {
+            Player opponent = game.getPlayer(opponentId);
+            if (opponent == null) {
+                continue;
+            }
+            for (Permanent permanent : game.getBattlefield().getAllActivePermanents(opponentId)) {
+                if (isNoncreatureSpell(permanent, game)) {
+                    add(score, permanent.getManaValue(), 1);
+                }
+            }
+            for (Card card : opponent.getGraveyard().getCards(game)) {
+                if (isNoncreatureSpell(card, game)) {
+                    add(score, card.getManaValue(), 1);
+                }
+            }
+        }
+        for (Card card : controller.getHand().getCards(game)) {
+            if (isNoncreatureSpell(card, game)) {
+                add(score, card.getManaValue(), -1);
+            }
+        }
+        for (Card card : controller.getLibrary().getCards(game)) {
+            if (isNoncreatureSpell(card, game)) {
+                add(score, card.getManaValue(), -1);
+            }
+        }
+        int best = 2;
+        for (int number = 0; number < score.length; number++) {
+            if (score[number] > score[best]
+                    || (score[number] == score[best] && Math.abs(number - 2) < Math.abs(best - 2))) {
+                best = number;
+            }
+        }
+        return best;
+    }
+
+    private static boolean isNoncreatureSpell(Card card, Game game) {
+        return !card.isLand(game) && !card.isCreature(game);
+    }
+
+    private static void add(int[] score, int manaValue, int amount) {
+        if (manaValue >= 0 && manaValue < score.length) {
+            score[manaValue] += amount;
+        }
     }
 
     @Override

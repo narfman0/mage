@@ -1,6 +1,7 @@
 package mage.cards.s;
 
 import java.util.UUID;
+import mage.ObjectColor;
 import mage.abilities.Ability;
 import mage.abilities.common.SimpleActivatedAbility;
 import mage.abilities.costs.common.TapSourceCost;
@@ -15,6 +16,7 @@ import mage.constants.Zone;
 import mage.filter.FilterCard;
 import mage.filter.predicate.mageobject.ColorPredicate;
 import mage.game.Game;
+import mage.game.permanent.Permanent;
 import mage.players.Player;
 import mage.target.common.TargetOpponent;
 
@@ -64,8 +66,15 @@ class ScryingGlassEffect extends OneShotEffect {
         int amount = 0;
         if (controller != null
                 && targetOpponent != null) {
-            amount = controller.getAmount(1, Integer.MAX_VALUE, "Choose a number", source, game);
-            controller.choose(Outcome.Discard, color, game);
+            // AI hint
+            String aiColor = controller.isComputer() ? chooseColorAI(targetOpponent, game) : null;
+            if (aiColor != null) {
+                amount = 1;
+                color.setChoice(aiColor);
+            } else {
+                amount = controller.getAmount(1, Integer.MAX_VALUE, "Choose a number", source, game);
+                controller.choose(Outcome.Discard, color, game);
+            }
             FilterCard filter = new FilterCard();
             filter.add(new ColorPredicate(color.getColor()));
             targetOpponent.revealCards(source, targetOpponent.getHand(), game);
@@ -80,6 +89,29 @@ class ScryingGlassEffect extends OneShotEffect {
         return false;
     }
     
+    /**
+     * A hand usually holds one or two cards of the colour its owner plays most, so the AI names 1 and the colour most
+     * seen among that opponent's permanents. With no coloured permanent to go on, null: the AI's own choices.
+     */
+    static String chooseColorAI(Player opponent, Game game) {
+        String best = null;
+        int bestCount = 0;
+        for (String colorName : ChoiceColor.getBaseColors()) {
+            ObjectColor objectColor = ChoiceColor.getColorFromString(colorName);
+            int count = 0;
+            for (Permanent permanent : game.getBattlefield().getAllActivePermanents(opponent.getId())) {
+                if (permanent.getColor(game).shares(objectColor)) {
+                    count++;
+                }
+            }
+            if (count > bestCount) {
+                best = colorName;
+                bestCount = count;
+            }
+        }
+        return best;
+    }
+
     @Override
     public ScryingGlassEffect copy() {
         return new ScryingGlassEffect(this);

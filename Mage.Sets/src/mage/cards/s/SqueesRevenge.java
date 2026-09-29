@@ -10,6 +10,7 @@ import mage.constants.CardType;
 import mage.constants.Outcome;
 import mage.game.Game;
 import mage.players.Player;
+import mage.util.RandomUtil;
 
 /**
  *
@@ -53,7 +54,10 @@ class SqueesRevengeEffect extends OneShotEffect {
     public boolean apply(Game game, Ability source) {
         Player player = game.getPlayer(source.getControllerId());
         if(player != null) {
-            int number = player.getAmount(0, Integer.MAX_VALUE, "Choose how many times to flip a coin", source, game);
+            // AI hint
+            int number = player.isComputer()
+                    ? chooseNumberAI(player)
+                    : player.getAmount(0, Integer.MAX_VALUE, "Choose how many times to flip a coin", source, game);
             game.informPlayers(player.getLogName() + " chooses " + number + '.');
             for(int i = 0; i < number; i++) {
                 if(!player.flipCoin(source, game, true)) {
@@ -64,5 +68,14 @@ class SqueesRevengeEffect extends OneShotEffect {
             return true;
         }
         return false;
+    }
+
+    /**
+     * n flips win 2n cards with chance 1/2^n: an expected 1 card for 1 or 2 flips, less for any more, and 0 wastes
+     * the spell. 1 or 2, and never more than half its library, since drawing from an empty library loses.
+     */
+    static int chooseNumberAI(Player player) {
+        int number = 1 + RandomUtil.nextInt(2);
+        return Math.min(number, player.getLibrary().size() / 2);
     }
 }
