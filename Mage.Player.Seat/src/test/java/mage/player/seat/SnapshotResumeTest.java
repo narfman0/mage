@@ -14,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InvalidClassException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,7 +22,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Snapshot resume (Snapshot, GameHost's policy): a game against the CPU,
@@ -109,6 +113,7 @@ public class SnapshotResumeTest {
     public void aCpuGameResumesFromItsSnapshotAtTheSameQuestion() throws Exception {
         Path logDir = Files.createTempDirectory("snap-a");
         GameHost host = new GameHost(config("snap", logDir, "cpu", null));
+        host.setSnapshotIntervalMs(0); // the turn-5 question is written seconds after the turn-3 one
         Assert.assertFalse(host.resumed());
         ScriptedSeat script = new ScriptedSeat();
         host.start();
@@ -151,6 +156,167 @@ public class SnapshotResumeTest {
         Assert.assertTrue("the resumed game keeps its own snapshot", Files.exists(logDir2.resolve(Snapshot.FILE)));
         Assert.assertTrue("and its own record", Files.exists(logDir2.resolve("server_game_events.jsonl")));
         h2.end();
+    }
+
+    /** Every perf record on the replies to the seat, collected as they drain. */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> await(GameHost host, String seat, List<Map<String, Object>> perf) throws InterruptedException {
+        Map<String, Object> d = host.awaitDecision(seat, 120_000);
+        if (d.get("perf") != null) {
+            perf.addAll((List<Map<String, Object>>) d.get("perf"));
+        }
+        Assert.assertNull("engine error", d.get("error"));
+        Assert.assertTrue("decision expected: " + d, Boolean.TRUE.equals(d.get("action_pending")));
+        return d;
+    }
+
+    /**
+     * Answers questions until one whose snapshot write starts (a top-level
+     * question; a payment or a target never writes); that question, open,
+     * with the write running.
+     */
+    private static Map<String, Object> toAWrite(GameHost host, ScriptedSeat script, Set<Integer> started,
+                                                List<Map<String, Object>> perf) throws Exception {
+        for (int i = 0; i < 100; i++) {
+            Map<String, Object> d = await(host, "You", perf);
+            int seq = host.game().getGameSeq();
+            for (int w = 0; w < 100 && !started.contains(seq); w++) {
+                Thread.sleep(20);
+            }
+            if (started.contains(seq)) {
+                return d;
+            }
+            Assert.assertTrue(Boolean.TRUE.equals(host.chooseAction("You", script.answer(d)).get("success")));
+        }
+        throw new AssertionError("no question was written");
+    }
+
+    private static List<Map<String, Object>> of(List<Map<String, Object>> perf, String kind) {
+        return perf.stream().filter(r -> kind.equals(r.get("kind"))).toList();
+    }
+
+    /**
+     * An answer given while the policy's write runs on a live host goes
+     * through at once and the previous file stays; once a write has been
+     * given up and the file is past its stale limit, the next write is held:
+     * the answer waits for it, the file moves on, and it resumes at that
+     * question. The harness's probe stalls each write for its first 2 s,
+     * 5 ms at a time (the abort is checked between), so "during" is long
+     * enough to answer in.
+     */
+    @Test(timeout = 300_000)
+    public void anAnswerMidWriteGoesThroughAndAStaleFileIsHeldFor() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-mid");
+        Path file = logDir.resolve(Snapshot.FILE);
+        GameHost host = new GameHost(config("mid", logDir, "cpu", null));
+        host.setSnapshotIntervalMs(0);
+        ScriptedSeat script = new ScriptedSeat();
+        List<Map<String, Object>> perf = new ArrayList<>();
+        host.start();
+        try {
+            Map<String, Object> d = playTo(host, script, "You", 3);
+            Map<String, Object> first = awaitSnapshot(host, host.game().getGameSeq());
+            Assert.assertNull("snapshot error: " + first, first.get("error"));
+            byte[] before = Files.readAllBytes(file);
+
+            Set<Integer> started = ConcurrentHashMap.newKeySet();
+            Map<Integer, Long> since = new ConcurrentHashMap<>();
+            host.writeProbe = seq -> {
+                started.add(seq);
+                if (System.currentTimeMillis() - since.computeIfAbsent(seq, k -> System.currentTimeMillis()) < 2_000) {
+                    try {
+                        Thread.sleep(5);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            host.setSnapshotDebounceMs(0); // every top-level question from here is written at once
+            host.setSnapshotStaleMs(0); // a file of any age is stale: after one abort, the next write is held
+            Assert.assertTrue(Boolean.TRUE.equals(host.chooseAction("You", script.answer(d)).get("success")));
+
+            // Mid-write: the answer aborts it.
+            Map<String, Object> mid = toAWrite(host, script, started, perf);
+            long t0 = System.currentTimeMillis();
+            Assert.assertTrue(Boolean.TRUE.equals(host.chooseAction("You", script.answer(mid)).get("success")));
+            long answerMs = System.currentTimeMillis() - t0;
+            Assert.assertTrue("the answer went through at once: " + answerMs + " ms", answerMs < 500);
+            Assert.assertArrayEquals("the previous file stays", before, Files.readAllBytes(file));
+            Assert.assertEquals(first.get("seq"), host.snapshotStatus().get("seq"));
+
+            // The next write is held: the answer during it waits, the file moves on.
+            Map<String, Object> heldAt = toAWrite(host, script, started, perf);
+            int heldSeq = host.game().getGameSeq();
+            t0 = System.currentTimeMillis();
+            Assert.assertTrue(Boolean.TRUE.equals(host.chooseAction("You", script.answer(heldAt)).get("success")));
+            long waitedMs = System.currentTimeMillis() - t0;
+            Assert.assertTrue("the answer waited for the held write: " + waitedMs + " ms", waitedMs >= 1_000);
+            Assert.assertEquals("written whole", heldSeq, host.snapshotStatus().get("seq"));
+            host.writeProbe = null;
+            host.setSnapshotStaleMs(60_000);
+            await(host, "You", perf); // the next question's reply carries the records
+            List<Map<String, Object>> writes = of(perf, "snapshot");
+            Assert.assertTrue("an aborted write: " + writes, writes.stream().anyMatch(w -> Boolean.TRUE.equals(w.get("aborted"))));
+            Assert.assertTrue("a held write of " + heldSeq + ": " + writes, writes.stream().anyMatch(w ->
+                    Boolean.TRUE.equals(w.get("held")) && Integer.valueOf(heldSeq).equals(w.get("seq")) && w.get("bytes") != null));
+            Assert.assertTrue("the answer waited on it (" + waitedMs + " ms): " + perf, of(perf, "answer_blocked").stream()
+                    .anyMatch(b -> "snapshot".equals(b.get("by"))));
+            LOG.info("mid-write answer " + answerMs + " ms; held write, answer waited " + waitedMs + " ms; " + writes);
+        } finally {
+            host.end();
+        }
+
+        Path logDir2 = Files.createTempDirectory("snap-mid-b");
+        GameHost h2 = new GameHost(config("mid", logDir2, "cpu", file.toString()));
+        h2.start();
+        try {
+            Map<String, Object> again = h2.awaitDecision("You", 60_000);
+            Assert.assertTrue("the held question again: " + again, Boolean.TRUE.equals(again.get("action_pending")));
+            int reached = playOn(h2, new ScriptedSeat(), List.of("You"), 6);
+            Assert.assertTrue("played on to turn " + reached, reached >= 6);
+        } finally {
+            h2.end();
+        }
+    }
+
+    /** Answers {@code n} questions, each after it has been open 150 ms (a write here takes a few). */
+    private static void answerSlowly(GameHost host, ScriptedSeat script, int n, List<Map<String, Object>> perf) throws Exception {
+        for (int i = 0; i < n; i++) {
+            Map<String, Object> d = await(host, "You", perf);
+            Thread.sleep(150);
+            Assert.assertTrue(Boolean.TRUE.equals(host.chooseAction("You", script.answer(d)).get("success")));
+        }
+        await(host, "You", perf); // the records of the last one
+    }
+
+    /**
+     * At most one completed write an interval, however many questions stay
+     * open past the debounce; without the interval, every one is written,
+     * and each once.
+     */
+    @Test(timeout = 300_000)
+    public void atMostOneWriteAnInterval() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-interval");
+        GameHost host = new GameHost(config("interval", logDir, "cpu", null));
+        host.setSnapshotDebounceMs(0);
+        host.setSnapshotIntervalMs(600_000);
+        ScriptedSeat script = new ScriptedSeat();
+        List<Map<String, Object>> perf = new ArrayList<>();
+        host.start();
+        try {
+            answerSlowly(host, script, 30, perf);
+            List<Map<String, Object>> written = of(perf, "snapshot").stream().filter(r -> r.get("bytes") != null).toList();
+            Assert.assertEquals("one write in the interval: " + of(perf, "snapshot"), 1, written.size());
+
+            perf.clear();
+            host.setSnapshotIntervalMs(0);
+            answerSlowly(host, script, 10, perf);
+            written = of(perf, "snapshot").stream().filter(r -> r.get("bytes") != null).toList();
+            Assert.assertTrue("a write at each top-level question: " + written, written.size() > 1);
+            Assert.assertEquals("each once: " + written, written.size(), written.stream().map(r -> r.get("seq")).distinct().count());
+        } finally {
+            host.end();
+        }
     }
 
     @Test(timeout = 300_000)
@@ -348,5 +514,142 @@ public class SnapshotResumeTest {
         Exile none = new Exile();
         zones(none).clear();
         Assert.assertNotNull(roundTrip(none).getPermanentExile());
+    }
+    // ---- the size of a 4-player board (fullpod issue #26) ----
+
+    static final String INFERNO = "src/test/resources/decks/heavenly_inferno.dck";
+    static final String HUNGRY = "src/test/resources/decks/power_hungry.dck";
+
+    /** Counts what goes through it. */
+    private static final class Counting extends OutputStream {
+        long bytes;
+
+        @Override
+        public void write(int b) {
+            bytes++;
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            bytes += len;
+        }
+    }
+
+    /** Serializes {@code o} as a snapshot does (gzip): the bytes, and every class named in the stream. */
+    private static long gzipBytes(Object o, List<String> classes) throws Exception {
+        Counting count = new Counting();
+        try (GZIPOutputStream gz = new GZIPOutputStream(count);
+             ObjectOutputStream out = new ObjectOutputStream(gz) {
+                 @Override
+                 protected void annotateClass(Class<?> cl) {
+                     if (classes != null) {
+                         classes.add(cl.getName());
+                     }
+                 }
+             }) {
+            out.writeObject(o);
+        }
+        return count.bytes;
+    }
+
+    /** Each CPU's kept search tree ({@code ComputerPlayer6.root}), by name; null when it has none. */
+    private static Map<String, Object> roots(GameHost host) throws ReflectiveOperationException {
+        Field f = mage.player.ai.ComputerPlayer6.class.getDeclaredField("root");
+        f.setAccessible(true);
+        Map<String, Object> r = new LinkedHashMap<>();
+        for (mage.players.Player p : host.game().getPlayers().values()) {
+            if (p instanceof mage.player.ai.ComputerPlayer6) {
+                r.put(p.getName(), f.get(p));
+            }
+        }
+        return r;
+    }
+
+    /**
+     * A 4-player Commander board — a scripted seat and three CPUs on the
+     * precons at the product's settings (skill 1, a 3 s cap) — written at
+     * the first question of every turn and at every question right after a
+     * CPU thought, when its search tree is biggest. The tree (a branch of
+     * full game copies the CPU keeps between thinks) is not in the file:
+     * the file never names SimulationNode2, however big the trees are.
+     * {@code -Dfullpod.sizeProbeTurns=N} plays further (default 8); the log
+     * has every write's size and the trees' own.
+     */
+    @Test(timeout = 1_800_000)
+    public void aFourPlayerBoardLeavesTheCpusSearchOut() throws Exception {
+        int turns = Integer.getInteger("fullpod.sizeProbeTurns", 8);
+        Path logDir = Files.createTempDirectory("snap-pod");
+        Path file = logDir.resolve(Snapshot.FILE);
+        GameHost host = new GameHost(new GameHost.Config("pod-size", "commander", 3L, logDir.toString(),
+                List.of(new GameHost.SeatSpec("You", "seat", INFERNO, 0),
+                        new GameHost.SeatSpec("CPU1", "cpu", HUNGRY, 1, 3),
+                        new GameHost.SeatSpec("CPU2", "cpu", INFERNO, 1, 3),
+                        new GameHost.SeatSpec("CPU3", "cpu", HUNGRY, 1, 3)),
+                true, null, 0, 1, "host", null, false));
+        ScriptedSeat script = new ScriptedSeat();
+        host.start();
+        int lastTurn = -1;
+        Map<String, Object> lastRoots = new LinkedHashMap<>();
+        long maxFile = 0;
+        long maxTrees = 0;
+        int written = 0;
+        int withTrees = 0;
+        boolean checkedClasses = false;
+        try {
+            for (int i = 0; i < 4_000; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 300_000);
+                Assert.assertNull("engine error", d.get("error"));
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                Assert.assertTrue("decision expected: " + d, Boolean.TRUE.equals(d.get("action_pending")));
+                int turn = turn(d);
+                if (turn > turns) {
+                    break;
+                }
+                Map<String, Object> roots = roots(host);
+                boolean thought = false;
+                for (Map.Entry<String, Object> e : roots.entrySet()) {
+                    if (e.getValue() != null && e.getValue() != lastRoots.get(e.getKey())) {
+                        thought = true;
+                    }
+                }
+                if (turn != lastTurn || thought) {
+                    lastTurn = turn;
+                    lastRoots = roots;
+                    long t0 = System.currentTimeMillis();
+                    long bytes = Snapshot.write(host.game(), file);
+                    long ms = System.currentTimeMillis() - t0;
+                    long trees = 0;
+                    for (Object root : roots.values()) {
+                        if (root != null) {
+                            trees += gzipBytes(root, null);
+                        }
+                    }
+                    written++;
+                    maxFile = Math.max(maxFile, bytes);
+                    maxTrees = Math.max(maxTrees, trees);
+                    LOG.info("POD_SIZE turn " + turn + " seq " + host.game().getGameSeq() + " file " + bytes + " B in " + ms
+                            + " ms; the CPUs' trees alone " + trees + " B" + (thought ? " (a CPU just thought)" : ""));
+                    if (trees > 0) {
+                        withTrees++;
+                        if (!checkedClasses) {
+                            checkedClasses = true;
+                            List<String> classes = new ArrayList<>();
+                            gzipBytes(host.game(), classes);
+                            Assert.assertFalse("the file carries a CPU's search tree", classes.contains("mage.player.ai.SimulationNode2"));
+                        }
+                    }
+                }
+                Map<String, Object> a = host.chooseAction("You", script.answer(d));
+                Assert.assertTrue("answer rejected: " + a + " for " + d, Boolean.TRUE.equals(a.get("success")));
+            }
+            LOG.info("POD_SIZE " + written + " writes to turn " + lastTurn + ", " + withTrees + " with a CPU tree kept; largest file "
+                    + maxFile + " B, largest trees " + maxTrees + " B");
+            Assert.assertTrue("a CPU kept a tree at some write, or the probe proves nothing", checkedClasses);
+            Assert.assertNotNull("the file reads back", Snapshot.read(file));
+        } finally {
+            host.end();
+        }
     }
 }

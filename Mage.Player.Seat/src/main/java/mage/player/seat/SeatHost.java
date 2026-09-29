@@ -185,6 +185,12 @@ public final class SeatHost {
                 if (args.get("snapshot_debounce_ms") != null) {
                     host.setSnapshotDebounceMs(((Number) args.get("snapshot_debounce_ms")).longValue());
                 }
+                if (args.get("snapshot_interval_ms") != null) {
+                    host.setSnapshotIntervalMs(((Number) args.get("snapshot_interval_ms")).longValue());
+                }
+                if (args.get("snapshot_stale_ms") != null) {
+                    host.setSnapshotStaleMs(((Number) args.get("snapshot_stale_ms")).longValue());
+                }
                 games.put(gameId, host);
                 host.start();
                 r.put("game_id", gameId);
