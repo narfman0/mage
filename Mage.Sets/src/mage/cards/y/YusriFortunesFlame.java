@@ -68,7 +68,10 @@ class YusriFortunesFlameEffect extends OneShotEffect {
         if (player == null) {
             return false;
         }
-        int flips = player.getAmount(1, 5, "Choose a number between 1 and 5", source, game);
+        // AI hint
+        int flips = player.isComputer()
+                ? chooseNumberAI(player, game)
+                : player.getAmount(1, 5, "Choose a number between 1 and 5", source, game);
         int wins = player
                 .flipCoins(source, game, flips, true)
                 .stream()
@@ -81,5 +84,39 @@ class YusriFortunesFlameEffect extends OneShotEffect {
             game.addEffect(new CastFromHandWithoutPayingManaCostEffect().setDuration(Duration.EndOfTurn), source);
         }
         return true;
+    }
+
+    /**
+     * Each flip is on average half a card for 1 damage. 2 flips is the usual pick (at worst 4 damage); 1 at 10 life
+     * or less; all 5 only when far ahead on life (at least 20, and 10 more than every opponent) with at least two
+     * expensive spells in hand for the free-casting turn. Never more flips than cards in its library.
+     */
+    static int chooseNumberAI(Player player, Game game) {
+        int life = player.getLife();
+        int flips;
+        if (life <= 10) {
+            flips = 1;
+        } else if (life >= 20 && isFarAhead(player, game) && countExpensiveSpells(player, game) >= 2) {
+            flips = 5;
+        } else {
+            flips = 2;
+        }
+        return Math.max(1, Math.min(flips, player.getLibrary().size()));
+    }
+
+    private static boolean isFarAhead(Player player, Game game) {
+        for (UUID opponentId : game.getOpponents(player.getId())) {
+            Player opponent = game.getPlayer(opponentId);
+            if (opponent != null && opponent.getLife() + 10 > player.getLife()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static long countExpensiveSpells(Player player, Game game) {
+        return player.getHand().getCards(game).stream()
+                .filter(card -> !card.isLand(game) && card.getManaValue() >= 4)
+                .count();
     }
 }
