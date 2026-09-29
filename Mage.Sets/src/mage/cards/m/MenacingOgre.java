@@ -15,6 +15,7 @@ import mage.counters.CounterType;
 import mage.game.Game;
 import mage.game.permanent.Permanent;
 import mage.players.Player;
+import mage.util.RandomUtil;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -81,7 +82,10 @@ class MenacingOgreEffect extends OneShotEffect {
         for (UUID playerId : game.getState().getPlayersInRange(source.getControllerId(), game)) {
             Player player = game.getPlayer(playerId);
             if (player != null) {
-                number = player.getAmount(0, 1000, message, source, game);
+                // AI hint
+                number = player.isComputer()
+                        ? chooseNumberAI(player, source)
+                        : player.getAmount(0, 1000, message, source, game);
                 numberChosen.put(player, number);
             }
         }
@@ -106,5 +110,17 @@ class MenacingOgreEffect extends OneShotEffect {
             }
         }
         return true;
+    }
+
+    /**
+     * Only the highest number loses life, so anyone but the Ogre's controller picks 0 and loses nothing. The
+     * controller wants the counters, which take being highest: 2 or 3, and never more than half its life.
+     */
+    static int chooseNumberAI(Player player, Ability source) {
+        if (!player.getId().equals(source.getControllerId())) {
+            return 0;
+        }
+        int number = 2 + RandomUtil.nextInt(2);
+        return Math.max(0, Math.min(number, (player.getLife() - 1) / 2));
     }
 }

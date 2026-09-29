@@ -80,9 +80,9 @@ class ChoiceOfDamnationsEffect extends OneShotEffect {
             Player controller = game.getPlayer(source.getControllerId());
             if (controller != null) {
 
-                // AI hint
+                // AI hint (the life-or-sacrifice choice is the caster's, so it is the caster that may be an AI)
                 boolean chooseLoseLife;
-                if (targetPlayer.isComputer()) {
+                if (controller.isComputer()) {
                     // AI as attacker
                     chooseLoseLife = (numberPermanents == 0 || amount <= numberPermanents || targetPlayer.getLife() < amount);
                 } else {

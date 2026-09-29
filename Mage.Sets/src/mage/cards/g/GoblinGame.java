@@ -8,6 +8,7 @@ import mage.constants.CardType;
 import mage.constants.Outcome;
 import mage.game.Game;
 import mage.players.Player;
+import mage.util.RandomUtil;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -68,7 +69,10 @@ class GoblinGameEffect extends OneShotEffect {
                 .collect(Collectors.toList());
         for (Player player : players) {
             // TODO: consider changing 1000 to another cap, or even Integer.MAX_VALUE if the Volcano Hellion binary wraparound gets addressed (although hiding over two billions of items would be rather difficult IRL)
-            numberChosen.put(player.getId(), player.getAmount(1, 1000, "Choose a number of objects to hide.", source, game));
+            // AI hint
+            numberChosen.put(player.getId(), player.isComputer()
+                    ? chooseNumberAI(player)
+                    : player.getAmount(1, 1000, "Choose a number of objects to hide.", source, game));
         }
 
         // get lowest number
@@ -95,5 +99,19 @@ class GoblinGameEffect extends OneShotEffect {
             }
         }
         return true;
+    }
+
+    /**
+     * Everyone loses what they hide, and whoever hides fewest also loses half their life, so the pick is the
+     * smallest number likely to beat a 1: 2 or 3. It comes down, to 1 at the least, while tying for fewest with it
+     * would be lethal (at 3 life or less that is 1).
+     */
+    static int chooseNumberAI(Player player) {
+        int life = player.getLife();
+        int number = 2 + RandomUtil.nextInt(2);
+        while (number > 1 && number + (life - number + 1) / 2 >= life) {
+            number--;
+        }
+        return number;
     }
 }
