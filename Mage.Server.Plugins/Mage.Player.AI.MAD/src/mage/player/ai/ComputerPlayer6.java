@@ -72,7 +72,13 @@ public class ComputerPlayer6 extends ComputerPlayer {
     protected List<String> choices = new ArrayList<>();
     protected Combat combat;
     protected int currentScore;
-    protected SimulationNode2 root;
+    // The search tree kept between thinks for getNextAction: a branch of full
+    // game copies, so never part of a saved game (a player read back from one
+    // starts without it and thinks afresh, as after any state change).
+    protected transient SimulationNode2 root;
+    // The serial form's id as it was computed before `root` became transient,
+    // so a game saved with a tree still reads (the tree is dropped on read).
+    private static final long serialVersionUID = 8318981655508152659L;
     List<Permanent> attackersList = new ArrayList<>();
     List<Permanent> attackersToCheck = new ArrayList<>();
 

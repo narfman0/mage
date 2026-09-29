@@ -146,6 +146,27 @@ public final class GameHost {
     private volatile long snapshotDebounceMs = 1_500;
     private final java.util.concurrent.atomic.AtomicLong answers = new java.util.concurrent.atomic.AtomicLong();
     private volatile long snapshotWritingSince;
+    // How often (fullpod issue #26): at most one completed write per
+    // `snapshotIntervalMs` — resume needs a recent board, not every stop, and
+    // each write is CPU a throttled box spends. And a bound on staleness: once
+    // the file is `snapshotStaleMs` old and a write has been given up for an
+    // answer since, the next write is held — an answer during it waits for it
+    // (an answer_blocked record, by snapshot) instead of aborting it — so a
+    // person who always answers mid-write still gets a file that recent.
+    private volatile long snapshotIntervalMs = 20_000;
+    private volatile long snapshotStaleMs = 60_000;
+    private volatile long snapshotDoneAt; // when the last write completed; 0 = none yet
+    private volatile long snapshotAgeFrom; // what the file's age counts from: that write, or the start
+    private volatile int snapshotAborts; // writes given up since then
+    // The seq of the last question something woke the game thread from. The
+    // seat's question is cleared only after the answer is sent, so for a
+    // moment an answered question still looks open; a write never starts
+    // at one (the game thread is already moving).
+    private volatile int wokenSeq = -1;
+    // The harness's view into a write: called with the game seq at every
+    // buffer the serializer hands down (SnapshotResumeTest slows a write
+    // with it to answer in the middle). Null outside the harness.
+    volatile java.util.function.IntConsumer writeProbe;
 
     // ---- perf (fullpod docs/engine.md "Perf records") ----
     // What made the table wait, drained onto the next reply that has a seat:
@@ -368,6 +389,7 @@ public final class GameHost {
         if (gameThread != null) {
             return;
         }
+        snapshotAgeFrom = System.currentTimeMillis();
         gameThread = new Thread(() -> {
             try {
                 body.run();
@@ -735,13 +757,23 @@ public final class GameHost {
     }
 
     /**
+     * Something is about to wake the game thread from its question — an
+     * answer, a rollback, a take-back, a concede, the end: a write in
+     * progress is given up, and none starts at that question.
+     */
+    private void woke() {
+        wokenSeq = game.getGameSeq();
+        answers.incrementAndGet();
+    }
+
+    /**
      * Every answer goes through here: it aborts a snapshot write in progress
      * (the counter moves before the lock is asked for, the write's stream sees
      * it within one buffer), then takes the lock the write holds. An answer
      * that still waited over 100 ms for it is a perf record.
      */
     private void answering(Seat seat, Runnable send) {
-        answers.incrementAndGet();
+        woke();
         boolean writing = snapshotWritingSince != 0;
         long t0 = System.currentTimeMillis();
         synchronized (gameLock) {
@@ -1017,6 +1049,16 @@ public final class GameHost {
     /** How long a question must stay open before the snapshot is written; 0 writes at once. */
     public void setSnapshotDebounceMs(long ms) {
         this.snapshotDebounceMs = Math.max(0, ms);
+    }
+
+    /** The least time between two completed snapshot writes; 0 writes at every question that stays open. */
+    public void setSnapshotIntervalMs(long ms) {
+        this.snapshotIntervalMs = Math.max(0, ms);
+    }
+
+    /** How old the file may get, once a write has been given up for an answer, before the next write is held. */
+    public void setSnapshotStaleMs(long ms) {
+        this.snapshotStaleMs = Math.max(0, ms);
     }
 
     /** The board as the seat sees it right now, without a question. */
@@ -1524,7 +1566,7 @@ public final class GameHost {
         }
         Decision stale = seat.pending();
         seat.batch.clear();
-        answers.incrementAndGet(); // aborts a snapshot write in progress
+        woke(); // aborts a snapshot write in progress
         synchronized (gameLock) {
             game.rollbackTurns(turns);
         }
@@ -1554,7 +1596,7 @@ public final class GameHost {
             if (seat.player.getStoredBookmark() == -1 || !seat.player.getId().equals(game.getPriorityPlayerId())) {
                 return error("no_take_back", "Nothing to take back", false);
             }
-            answers.incrementAndGet();
+            woke();
             synchronized (gameLock) {
                 game.undo(seat.player.getId());
                 game.informPlayers(seat.player.getLogName() + " takes back the mana they tapped");
@@ -1569,7 +1611,7 @@ public final class GameHost {
     public void concede(String seatName) {
         Seat seat = seat(seatName);
         game.informPlayers(seat.player.getLogName() + " wants to concede");
-        answers.incrementAndGet();
+        woke();
         synchronized (gameLock) {
             game.setConcedingPlayer(seat.player.getId());
         }
@@ -1616,7 +1658,7 @@ public final class GameHost {
 
     /** Ends the game (the engine tells the players) and waits briefly for the game thread. */
     public void end() {
-        answers.incrementAndGet();
+        woke();
         synchronized (gameLock) {
             if (!game.hasEnded()) {
                 game.end();
@@ -1675,15 +1717,25 @@ public final class GameHost {
      * file is at most a few stops behind, which a resume accepts. An answer
      * during the write aborts it ({@link #answering}): the write stops within
      * a buffer, the previous file stays, and the answer goes through.
+     *
+     * The cadence: nothing is written within {@code snapshotIntervalMs} of
+     * the last completed write, and a write is held — not given up for an
+     * answer, which waits for it — when one has already been given up and
+     * the file is {@code snapshotStaleMs} old. The command
+     * ({@link #snapshotNow}) writes regardless of both.
      */
     private void writeSnapshot() {
-        writeSnapshot(snapshotDebounceMs);
+        writeSnapshot(snapshotDebounceMs, false);
     }
 
-    private void writeSnapshot(long debounceMs) {
+    private void writeSnapshot(long debounceMs, boolean command) {
         Thread t = gameThread;
         if (t == null) {
             return;
+        }
+        long done = snapshotDoneAt;
+        if (!command && done != 0 && System.currentTimeMillis() - done < snapshotIntervalMs) {
+            return; // written recently enough: the next question after the interval writes
         }
         long asked = System.currentTimeMillis();
         long until = asked + 2_000;
@@ -1698,6 +1750,9 @@ public final class GameHost {
         long parkWait = System.currentTimeMillis() - asked;
         int seq = game.getGameSeq();
         long answered = answers.get();
+        if (seq <= wokenSeq || (!command && seq == snapshotSeq)) {
+            return; // answered already, or this question is the file
+        }
         long waitUntil = asked + debounceMs;
         while (System.currentTimeMillis() < waitUntil) {
             if (answers.get() != answered || game.getGameSeq() != seq || game.hasEnded()) {
@@ -1708,7 +1763,7 @@ public final class GameHost {
             }
         }
         synchronized (gameLock) {
-            if (answers.get() != answered || game.getGameSeq() != seq || !(parked(t) && anyPending())) {
+            if (answers.get() != answered || game.getGameSeq() != seq || seq <= wokenSeq || !(parked(t) && anyPending())) {
                 return;
             }
             long t0 = System.currentTimeMillis();
@@ -1716,14 +1771,28 @@ public final class GameHost {
             Map<String, Object> r = new LinkedHashMap<>();
             r.put("kind", "snapshot");
             r.put("seq", seq);
+            boolean held = !command && snapshotAborts > 0 && t0 - snapshotAgeFrom >= snapshotStaleMs;
+            if (held) {
+                r.put("held", true);
+            }
+            java.util.function.IntConsumer probe = writeProbe;
             try {
-                long bytes = Snapshot.write(game, snapshotPath, () -> answers.get() != answered);
+                long bytes = Snapshot.write(game, snapshotPath, () -> {
+                    if (probe != null) {
+                        probe.accept(seq);
+                    }
+                    return !held && answers.get() != answered;
+                });
                 snapshotBytes = bytes;
                 snapshotMs = System.currentTimeMillis() - t0;
                 snapshotSeq = seq;
                 snapshotError = null;
+                snapshotDoneAt = System.currentTimeMillis();
+                snapshotAgeFrom = snapshotDoneAt;
+                snapshotAborts = 0;
                 r.put("bytes", bytes);
             } catch (Snapshot.Aborted ex) {
+                snapshotAborts++;
                 r.put("aborted", true);
             } catch (Exception ex) {
                 snapshotError = String.valueOf(ex);
@@ -1767,7 +1836,7 @@ public final class GameHost {
         if (snapshotPath == null) {
             return error("no_snapshot", "This game keeps no snapshot", false);
         }
-        writeSnapshot(0);
+        writeSnapshot(0, true);
         return snapshotStatus();
     }
 
