@@ -193,6 +193,7 @@ public final class GameHost {
 
     public GameHost(Config config) throws Exception {
         this.config = config;
+        requireDistinctNames(config.seats());
         initCollectors();
         boolean commander = "commander".equals(config.format());
         RangeOfInfluence range = commander ? RangeOfInfluence.ALL : RangeOfInfluence.ONE;
@@ -208,6 +209,33 @@ public final class GameHost {
             }
         });
         game.addPlayerQueryEventListener(this::onQuery);
+    }
+
+    /**
+     * The host addresses a seat by its engine username (every verb takes the
+     * name; the CPUs and a snapshot's players are matched by it too), so two
+     * seats with one name would leave one of them unreachable: refused before
+     * anything is built or read, rather than the second overwriting the first.
+     * A seat id that cannot collide is the fix this stands in for (fullpod
+     * issue #24).
+     */
+    private static void requireDistinctNames(List<SeatSpec> seats) {
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (SeatSpec spec : seats) {
+            if (!names.add(spec.name())) {
+                throw new IllegalArgumentException("two seats are named " + spec.name()
+                        + ": the host addresses a seat by its name, so every seat needs its own");
+            }
+        }
+    }
+
+    /** A put that refuses a second value under one name instead of overwriting the first in silence. */
+    private static <V> void putOnce(Map<String, V> map, String name, V value, String what) {
+        if (map.containsKey(name)) {
+            throw new IllegalArgumentException("two " + what + " are named " + name
+                    + ": the host addresses a seat by its name, so every seat needs its own");
+        }
+        map.put(name, value);
     }
 
     /** A new game the way XMage's own tests make one: players and decks added, a match for the AI's simulations. */
@@ -243,7 +271,7 @@ public final class GameHost {
                     cpu.setMaxThinkSecs(spec.maxThinkSecs());
                 }
                 cpu.setHooks(cpuHooks);
-                cpus.put(spec.name(), cpu);
+                putOnce(cpus, spec.name(), cpu, "CPUs");
                 player = cpu;
             } else {
                 SeatPlayer seat = new SeatPlayer(spec.name(), range);
@@ -251,7 +279,7 @@ public final class GameHost {
                 player = seat;
                 Seat s = new Seat(spec.name(), seat, config.offerManaSources());
                 seatsById.put(seat.getId(), s);
-                seatsByName.put(spec.name(), s);
+                putOnce(seatsByName, spec.name(), s, "seats");
             }
             DeckCardLists list = DeckImporter.importDeckFromFile(spec.deck(), true);
             Deck deck = Deck.load(list, false, false, null);
@@ -285,7 +313,7 @@ public final class GameHost {
         g.getOptions().replayFrom = null;
         Map<String, Player> byName = new LinkedHashMap<>();
         for (Player p : g.getPlayers().values()) {
-            byName.put(p.getName(), p);
+            putOnce(byName, p.getName(), p, "players in the snapshot");
         }
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (SeatSpec spec : config.seats()) {
@@ -304,12 +332,12 @@ public final class GameHost {
                     if (spec.maxThinkSecs() > 0) {
                         cpu.setMaxThinkSecs(spec.maxThinkSecs());
                     }
-                    cpus.put(spec.name(), cpu);
+                    putOnce(cpus, spec.name(), cpu, "CPUs");
                 } else if (p instanceof mage.player.ai.ComputerPlayer6 cp6) {
                     if (spec.maxThinkSecs() > 0) {
                         cp6.setMaxThinkTimeSecs(spec.maxThinkSecs());
                     }
-                    cpus.put(spec.name(), cp6);
+                    putOnce(cpus, spec.name(), cp6, "CPUs");
                 }
                 continue;
             }
@@ -324,7 +352,7 @@ public final class GameHost {
             seat.setAskWhenAmbiguous(config.offerManaSources());
             Seat s = new Seat(spec.name(), seat, config.offerManaSources());
             seatsById.put(seat.getId(), s);
-            seatsByName.put(spec.name(), s);
+            putOnce(seatsByName, spec.name(), s, "seats");
         }
         if (!seen.containsAll(byName.keySet())) {
             throw new IllegalArgumentException("every player in the snapshot needs a seat: " + byName.keySet() + ", given " + seen);
@@ -351,6 +379,7 @@ public final class GameHost {
         return logLines;
     }
 
+    /** Every seat, one name each: a second seat under a name is refused when it is put, never dropped here. */
     public List<String> seatNames() {
         return new ArrayList<>(seatsByName.keySet());
     }
