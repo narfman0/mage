@@ -460,7 +460,7 @@ public final class GameHost {
      * draw"); the product needs the seat.
      */
     public String winnerName() {
-        if (!game.hasEnded() || game.isADraw()) {
+        if (!game.hasEnded()) {
             return null;
         }
         for (Player p : game.getState().getPlayers().values()) {
@@ -469,6 +469,30 @@ public final class GameHost {
             }
         }
         return null;
+    }
+
+    /**
+     * An ended game with no winner yet is a draw only once the game thread
+     * has finished with it. A concede while nobody has priority (the
+     * starting player's question, the mulligans) is processed on the
+     * conceding thread, which ends the game before the winner is marked, and
+     * the game thread names its winner later still ({@code winnerId}, which
+     * {@code isADraw} reads); a result read in that gap said "draw" (fullpod
+     * issue #32). Waits up to a second for the thread to settle it.
+     */
+    private boolean isDraw() {
+        if (!game.hasEnded() || winnerName() != null) {
+            return false;
+        }
+        Thread t = gameThread;
+        if (t != null && t != Thread.currentThread() && t.isAlive()) {
+            try {
+                t.join(1_000);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        return winnerName() == null && game.isADraw();
     }
 
     // ---- the listener (game thread) --------------------------------------
@@ -496,6 +520,9 @@ public final class GameHost {
         }
         if (answerFromBatch(seat, e)) {
             return;
+        }
+        if (seat.conceded) {
+            return; // nobody will answer it: the seat has left (the engine's own abort ends the wait)
         }
         try {
             seat.deliver(renderer.render(game, seat.player, e, seq, seat.offerManaSources));
@@ -912,11 +939,10 @@ public final class GameHost {
     private void finish(Seat seat, Map<String, Object> r) {
         if (game.hasEnded()) {
             r.put("game_over", true);
-            String winner = winnerName();
-            if (winner != null) {
-                r.put("winner", winner);
-            } else if (game.isADraw()) {
+            if (isDraw()) {
                 r.put("draw", true);
+            } else if (winnerName() != null) {
+                r.put("winner", winnerName());
             }
         } else if (threadDied()) {
             r.put("engine_died", true);
@@ -926,6 +952,9 @@ public final class GameHost {
         }
         if (seat.player.hasLost()) {
             r.put("player_dead", true);
+        }
+        if (seat.conceded) {
+            r.put("conceded", true);
         }
         List<String> chat = seat.drainChat();
         if (!chat.isEmpty()) {
@@ -1637,9 +1666,17 @@ public final class GameHost {
         }
     }
 
+    /**
+     * The seat leaves the game. The question it was asked goes with it: a
+     * concede is never an answer, so the seat's pending decision would
+     * otherwise be handed out again by the next poll (fullpod issue #32).
+     */
     public void concede(String seatName) {
         Seat seat = seat(seatName);
         game.informPlayers(seat.player.getLogName() + " wants to concede");
+        seat.conceded = true;
+        seat.batch.clear();
+        seat.dropPending();
         woke();
         synchronized (gameLock) {
             game.setConcedingPlayer(seat.player.getId());
