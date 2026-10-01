@@ -238,7 +238,7 @@ public class ReplayFeederCollector extends EmptyDataCollector {
                 };
             }
             case "string": {
-                String v = d.value() == null ? null : d.value().getAsString();
+                String v = liveKey(event, d, d.value() == null ? null : d.value().getAsString());
                 return () -> {
                     collectors.onPlayerResponse(game, playerId, "string", v);
                     player.setResponseString(v);
@@ -261,6 +261,52 @@ public class ReplayFeederCollector extends EmptyDataCollector {
             default:
                 throw new IllegalStateException("recorded response type '" + type + "' at seq " + d.seq() + " cannot be replayed");
         }
+    }
+
+    /**
+     * The live key a recorded answer to a keyed choice means (fullpod #49). A
+     * key the live choice offers is the answer as it is; one it doesn't — a
+     * replacement effect's key is its effect and ability ids, new every run —
+     * is mapped to the live item with the recorded text (engine refs
+     * dropped), the recorded position breaking a tie between items of one
+     * text, or the recorded position alone for a record with no text. The
+     * {@code #} "remember" prefix rides along. Not a keyed choice, or nothing
+     * recorded to map by: the recorded string, as before.
+     */
+    private static String liveKey(PlayerQueryEvent event, ReplayScript.Decision d, String recorded) {
+        mage.choices.Choice choice = event == null ? null : event.getChoice();
+        if (recorded == null || choice == null || !choice.isKeyChoice()) {
+            return recorded;
+        }
+        String prefix = recorded.startsWith("#") ? "#" : "";
+        String key = recorded.substring(prefix.length());
+        Map<String, String> live = choice.getKeyChoices();
+        if (live.containsKey(key) || (d.name() == null && d.choiceIndex() == null)) {
+            return recorded;
+        }
+        List<String> keys = new ArrayList<>(live.keySet());
+        List<Integer> sameText = new ArrayList<>();
+        if (d.name() != null) {
+            String want = ReplayScript.normalizeChoice(d.name());
+            for (int i = 0; i < keys.size(); i++) {
+                if (want.equals(ReplayScript.normalizeChoice(live.get(keys.get(i))))) {
+                    sameText.add(i);
+                }
+            }
+        }
+        Integer at = d.choiceIndex();
+        int pick;
+        if (sameText.size() == 1) {
+            pick = sameText.get(0);
+        } else if (!sameText.isEmpty()) {
+            pick = at != null && sameText.contains(at) ? at : sameText.get(0);
+        } else if (d.name() == null && at != null && at >= 0 && at < keys.size()) {
+            pick = at;
+        } else {
+            throw new IllegalStateException("choice at seq " + d.seq() + ": recorded \"" + d.name()
+                    + "\" is not among the live items " + live.values());
+        }
+        return prefix + keys.get(pick);
     }
 
     /**
