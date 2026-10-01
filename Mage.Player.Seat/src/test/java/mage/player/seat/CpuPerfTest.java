@@ -4,6 +4,7 @@ import mage.cards.Card;
 import mage.cards.repository.CardInfo;
 import mage.cards.repository.CardRepository;
 import mage.cards.repository.CardScanner;
+import mage.constants.PhaseStep;
 import mage.constants.RangeOfInfluence;
 import mage.game.Game;
 import mage.players.Player;
@@ -341,6 +342,47 @@ public class CpuPerfTest {
             Assert.assertThrows(Snapshot.Aborted.class, () -> Snapshot.write(host.game(), file, () -> true));
             Assert.assertArrayEquals("the previous snapshot stays", before, Files.readAllBytes(file));
             Assert.assertFalse("no temp file left", Files.exists(logDir.resolve(Snapshot.FILE + ".tmp")));
+        } finally {
+            host.end();
+        }
+    }
+    @Test
+    public void theLoopGuardPassesTheFourthIdenticalActInAStepAndForgetsAtTheNext() {
+        SeatCpu.LoopGuard guard = new SeatCpu.LoopGuard();
+        for (int i = 0; i < SeatCpu.LOOP_BREAK; i++) {
+            Assert.assertFalse("act " + (i + 1), guard.repeated(16, PhaseStep.PRECOMBAT_MAIN, "untap@1"));
+        }
+        Assert.assertTrue("the fourth", guard.repeated(16, PhaseStep.PRECOMBAT_MAIN, "untap@1"));
+        Assert.assertFalse("another board is another act", guard.repeated(16, PhaseStep.PRECOMBAT_MAIN, "untap@2"));
+        Assert.assertFalse("the next step starts over", guard.repeated(16, PhaseStep.DECLARE_ATTACKERS, "untap@1"));
+        Assert.assertFalse("so does the next turn", guard.repeated(17, PhaseStep.DECLARE_ATTACKERS, "untap@1"));
+    }
+
+    /**
+     * Report 078b7f4b49: a CPU with Seeker of Skybreak ({T}: Untap target
+     * creature) untapped it with itself at every priority of an opponent's
+     * turn, 2,340 times, and the table never got its next question. The
+     * search no longer offers an action that leaves the board as it was
+     * (ComputerPlayer6.isNoOp), so the game goes on and the Seeker never
+     * targets itself; the loop guard behind it has nothing to break.
+     */
+    @Test(timeout = 600_000)
+    public void aSeekerOfSkybreakNeverUntapsItselfAndTheGameGoesOn() throws Exception {
+        Path logDir = Files.createTempDirectory("perf-seeker");
+        GameHost host = host("perf-seeker", 1, 1, logDir);
+        Game game = host.game();
+        game.cheat(player(game, "CPU").getId(), List.of(), List.of(),
+                List.of(new PutToBattlefieldInfo(card("Seeker of Skybreak"), false)), List.of(), List.of(), List.of());
+        host.start();
+        try {
+            List<Map<String, Object>> perf = playTo(host, 6, new ArrayList<>());
+            List<String> lines = Files.readAllLines(logDir.resolve("server_game_events.jsonl"));
+            long selfUntaps = lines.stream()
+                    .filter(l -> l.contains("from Seeker of Skybreak") && l.contains("targeting Seeker of Skybreak"))
+                    .count();
+            Assert.assertEquals("the Seeker untapping itself", 0, selfUntaps);
+            Assert.assertTrue("turn 6 was reached", lines.stream().anyMatch(l -> l.contains("\"turn\": 6") || l.contains("\"turn\":6")));
+            Assert.assertTrue("nothing for the loop guard to break: " + of(perf, "cpu_loop_break"), of(perf, "cpu_loop_break").isEmpty());
         } finally {
             host.end();
         }
