@@ -54,8 +54,23 @@ final class AutoPay {
         }
     }
 
-    /** One way to tap a source: the ability to activate and the units it makes. */
-    record Output(UUID abilityId, List<Kind> units) {
+    /**
+     * One way to tap a source: the ability to activate, the units it makes,
+     * and the mana it costs on top of the tap ({@code cost}, empty for a
+     * tap-only ability). A Signet is {@code [W, R]} for one generic pip: a
+     * plan that taps it must also pay that pip, from another source tapped
+     * for it (never from the Signet's own mana, which arrives after the cost
+     * is paid, and never from another costly ability: one level deep).
+     */
+    record Output(UUID abilityId, List<Kind> units, List<Pip> cost) {
+
+        Output(UUID abilityId, List<Kind> units) {
+            this(abilityId, units, List.of());
+        }
+
+        boolean costly() {
+            return !cost.isEmpty();
+        }
     }
 
     /**
@@ -70,8 +85,17 @@ final class AutoPay {
     record Source(UUID id, String key, List<Output> outputs, boolean clean) {
     }
 
-    /** The next tap: the source, the ability, and the kind it should make for the pip it pays. */
-    record Pick(Source source, Output output, Kind make) {
+    /**
+     * The next tap: the source, the ability, and the kind it should make for
+     * the pip it pays. A costly output's pick carries {@code costPicks}, the
+     * taps that pay its own cost: the engine asks for them inside the
+     * activation, and they are this plan's, not a fresh plan's.
+     */
+    record Pick(Source source, Output output, Kind make, List<Pick> costPicks) {
+
+        Pick(Source source, Output output, Kind make) {
+            this(source, output, make, List.of());
+        }
     }
 
     /**
@@ -91,7 +115,12 @@ final class AutoPay {
     private record Group(String key, List<Source> members) {
     }
 
-    private record Tap(int group, Output output, Kind make) {
+    /** {@code costOf}: the index in the plan's taps of the costly tap whose cost this one pays, or -1. */
+    private record Tap(int group, Output output, Kind make, int costOf) {
+    }
+
+    /** A pip a costly tap owes: paid only by a fresh, cost-free tap. */
+    private record Owed(Pip pip, int owner) {
     }
 
     private record Terminal(int[] counts, List<Tap> taps, int overpay) {
@@ -115,24 +144,55 @@ final class AutoPay {
             return Plan.NONE;
         }
         AutoPay search = new AutoPay(sources);
-        search.dfs(new ArrayList<>(pips), new ArrayList<>(), new int[search.groups.size()], new ArrayList<>(), 0);
+        search.dfs(new ArrayList<>(pips), new ArrayList<>(), new ArrayList<>(), new int[search.groups.size()], new ArrayList<>(), 0);
         if (search.terminals.isEmpty()) {
             return Plan.NONE;
         }
         List<Terminal> distinct = search.undominated(new ArrayList<>(search.terminals.values()));
         boolean ambiguous = search.truncated || distinct.size() > 1;
         Terminal chosen = ambiguous ? search.pilotChoice(distinct) : distinct.get(0);
-        Tap first = chosen.taps().get(0);
-        Group g = search.groups.get(first.group());
-        return new Plan(true, ambiguous, new Pick(g.members().get(0), first.output(), first.make()));
+        return new Plan(true, ambiguous, search.firstPick(chosen));
+    }
+
+    /**
+     * The tap to make now. A costly tap goes first, with the taps that pay
+     * its cost: the engine pays that cost inside the activation, so they
+     * are made there, and the rest of the plan is planned again afterwards.
+     * Each tap of a group is its own member, in tap order, so two Swamps
+     * paying one cost are two Swamps.
+     */
+    private Pick firstPick(Terminal plan) {
+        List<Tap> taps = plan.taps();
+        int[] used = new int[groups.size()];
+        List<Source> member = new ArrayList<>();
+        for (Tap tap : taps) {
+            member.add(groups.get(tap.group()).members().get(used[tap.group()]++));
+        }
+        int first = 0;
+        for (int i = 0; i < taps.size(); i++) {
+            if (taps.get(i).output().costly()) {
+                first = i;
+                break;
+            }
+        }
+        List<Pick> costPicks = new ArrayList<>();
+        for (int i = 0; i < taps.size(); i++) {
+            if (taps.get(i).costOf() == first && taps.get(first).output().costly()) {
+                costPicks.add(new Pick(member.get(i), taps.get(i).output(), taps.get(i).make()));
+            }
+        }
+        Tap tap = taps.get(first);
+        return new Pick(member.get(first), tap.output(), tap.make(), costPicks);
     }
 
     /**
      * Depth first over the ways to pay: {@code floating} is mana a tapped
      * source made beyond the pip it was tapped for (a Sol Ring's second
      * {C}); it pays a pip before anything else is tapped, or is wasted.
+     * {@code owed} is what costly taps still owe, paid by fresh cost-free
+     * taps only.
      */
-    private void dfs(List<Pip> pips, List<Kind> floating, int[] counts, List<Tap> taps, int overpay) {
+    private void dfs(List<Pip> pips, List<Owed> owed, List<Kind> floating, int[] counts, List<Tap> taps, int overpay) {
         if (truncated) {
             return;
         }
@@ -154,14 +214,14 @@ final class AutoPay {
                 paidSomething = true;
                 List<Pip> left = new ArrayList<>(pips);
                 left.remove(p);
-                dfs(left, rest, counts, taps, overpay);
+                dfs(left, owed, rest, counts, taps, overpay);
             }
             if (!paidSomething) {
-                dfs(pips, rest, counts, taps, overpay + 1);
+                dfs(pips, owed, rest, counts, taps, overpay + 1);
             }
             return;
         }
-        if (pips.isEmpty()) {
+        if (pips.isEmpty() && owed.isEmpty()) {
             String sig = Arrays.toString(counts);
             Terminal seen = terminals.get(sig);
             if (seen == null || overpay < seen.overpay()) {
@@ -171,15 +231,21 @@ final class AutoPay {
         }
         // The most constrained pip first keeps the tree small; every pip must
         // be paid by something, so fixing which pip is paid next loses no plan.
+        // Index i < pips.size() is a pip of the cost; past it, one a costly tap owes.
         int at = 0;
         int fewest = Integer.MAX_VALUE;
-        for (int i = 0; i < pips.size(); i++) {
+        for (int i = 0; i < pips.size() + owed.size(); i++) {
+            boolean isOwed = i >= pips.size();
+            Pip candidate = isOwed ? owed.get(i - pips.size()).pip() : pips.get(i);
             int ways = 0;
             for (int g = 0; g < groups.size(); g++) {
                 if (counts[g] < groups.get(g).members().size()) {
                     for (Output o : groups.get(g).members().get(0).outputs()) {
+                        if (isOwed && o.costly()) {
+                            continue;
+                        }
                         for (Kind u : o.units()) {
-                            if (canPay(pips.get(i), u)) {
+                            if (canPay(candidate, u)) {
                                 ways++;
                             }
                         }
@@ -194,15 +260,35 @@ final class AutoPay {
         if (fewest == 0) {
             return; // a pip nothing clean can pay: no plan down this branch
         }
-        Pip pip = pips.get(at);
+        boolean payingOwed = at >= pips.size();
+        Pip pip;
+        int costOf;
         List<Pip> left = new ArrayList<>(pips);
-        left.remove(at);
+        List<Owed> owedLeft = new ArrayList<>(owed);
+        if (payingOwed) {
+            Owed o = owedLeft.remove(at - pips.size());
+            pip = o.pip();
+            costOf = o.owner();
+        } else {
+            pip = left.remove(at);
+            costOf = -1;
+        }
         for (int g = 0; g < groups.size(); g++) {
             Group group = groups.get(g);
             if (counts[g] >= group.members().size()) {
                 continue;
             }
             for (Output o : group.members().get(0).outputs()) {
+                if (payingOwed && o.costly()) {
+                    continue;
+                }
+                List<Owed> nextOwed = owedLeft;
+                if (o.costly()) {
+                    nextOwed = new ArrayList<>(owedLeft);
+                    for (Pip c : o.cost()) {
+                        nextOwed.add(new Owed(c, taps.size()));
+                    }
+                }
                 EnumSet<Kind> tried = EnumSet.noneOf(Kind.class);
                 for (int i = 0; i < o.units().size(); i++) {
                     Kind unit = o.units().get(i);
@@ -221,8 +307,8 @@ final class AutoPay {
                             }
                         }
                         counts[g]++;
-                        taps.add(new Tap(g, o, make));
-                        dfs(left, spare, counts, taps, overpay);
+                        taps.add(new Tap(g, o, make, costOf));
+                        dfs(left, nextOwed, spare, counts, taps, overpay);
                         taps.remove(taps.size() - 1);
                         counts[g]--;
                     }
@@ -319,12 +405,17 @@ final class AutoPay {
         return false;
     }
 
-    /** Whether source a can make everything source b can: for each of b's outputs, one of a's covers it. */
+    /**
+     * Whether source a can make everything source b can: for each of b's
+     * outputs, one of a's covers it. A costly output (a Signet) stands in
+     * only for another costly one: it needs mana of its own, so a Signet
+     * left up is not a Plains left up.
+     */
     static boolean covers(Source a, Source b) {
         for (Output ob : b.outputs()) {
             boolean covered = false;
             for (Output oa : a.outputs()) {
-                if (covers(oa.units(), ob.units())) {
+                if ((!oa.costly() || ob.costly()) && covers(oa.units(), ob.units())) {
                     covered = true;
                     break;
                 }
@@ -371,9 +462,24 @@ final class AutoPay {
                 }
             }
             EnumSet<Kind> left = EnumSet.noneOf(Kind.class);
+            // A costly source left up counts only while the free sources left
+            // up could pay its cost (a Signet with no land beside it makes nothing).
+            int freeLeft = 0;
             for (int g = 0; g < groups.size(); g++) {
-                if (t.counts()[g] < groups.get(g).members().size()) {
+                boolean free = groups.get(g).members().get(0).outputs().stream().anyMatch(o -> !o.costly());
+                if (free) {
+                    freeLeft += groups.get(g).members().size() - t.counts()[g];
+                }
+            }
+            for (int g = 0; g < groups.size(); g++) {
+                for (int k = t.counts()[g]; k < groups.get(g).members().size(); k++) {
                     for (Output o : groups.get(g).members().get(0).outputs()) {
+                        if (o.costly()) {
+                            if (o.cost().size() > freeLeft) {
+                                continue;
+                            }
+                            freeLeft -= o.cost().size();
+                        }
                         for (Kind u : o.units()) {
                             if (u == Kind.ANY) {
                                 left.addAll(COLOURS);
@@ -403,7 +509,7 @@ final class AutoPay {
     static String key(List<Output> outputs, String distinguishing, boolean clean) {
         List<String> parts = new ArrayList<>();
         for (Output o : outputs) {
-            parts.add(o.units().toString());
+            parts.add(o.units().toString() + (o.costly() ? "+cost" + o.cost().size() + o.cost() : ""));
         }
         parts.sort(String::compareTo);
         return parts + (clean ? "" : "|unclean") + (distinguishing == null ? "" : "|" + distinguishing);

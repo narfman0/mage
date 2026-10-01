@@ -36,7 +36,9 @@ import mage.player.human.PlayerResponse;
 import mage.players.PlayerImpl;
 import mage.players.net.UserData;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -88,6 +90,20 @@ public class SeatPlayer extends HumanPlayer {
      * as usual. Null between runs.
      */
     private volatile Set<UUID> orderRest = null;
+
+    /**
+     * The taps a plan made for a costly mana ability's own cost (a Signet's
+     * {1}), while that ability is being activated: the engine asks for the
+     * cost inside the activation, with the Signet's ability as the thing
+     * being paid for, and these answer it ({@link AutoPay.Pick#costPicks}).
+     * Game thread only; empty between activations.
+     */
+    private transient Deque<Planned> costTaps = new ArrayDeque<>();
+    private transient UUID costTapsFor;
+
+    /** A tap the plan has resolved to the engine's objects. */
+    private record Planned(ActivatedManaAbilityImpl ability, Permanent permanent, AutoPay.Kind make) {
+    }
 
     public SeatPlayer(String name, RangeOfInfluence range) {
         super(name, range, 0);
@@ -157,8 +173,16 @@ public class SeatPlayer extends HumanPlayer {
         this.autoPay = autoPay;
     }
 
+    /**
+     * A person sits here ({@code ask}) or a pilot does. A pilot is also never
+     * asked "You still have mana in your mana pool and it will be lost. Pass
+     * anyway?": a Signet makes two mana for a one-pip spell, the rest floats,
+     * and a "no" puts the seat back at the same priority to be asked again.
+     * The mana empties as the rules say.
+     */
     public void setAskWhenAmbiguous(boolean ask) {
         this.askWhenAmbiguous = ask;
+        getUserData().setConfirmEmptyManaPool(ask);
     }
 
     /**
@@ -274,6 +298,16 @@ public class SeatPlayer extends HumanPlayer {
         // path is skipped; and nothing is ever cancelled for want of a source
         // while one of these can pay.
         boolean specialPayment = !game.getState().getSpecialActions().getControlledBy(playerId, true).isEmpty();
+        if (costTaps == null) {
+            costTaps = new ArrayDeque<>(); // a copy read back from a snapshot
+        }
+        if (abilityToCast != null && abilityToCast.getSourceId().equals(costTapsFor) && !costTaps.isEmpty()) {
+            // A costly mana ability the plan tapped is asking for its own cost:
+            // the plan's taps for it, one per call.
+            Planned next = costTaps.poll();
+            tap(next.ability(), next.permanent(), next.make(), unpaid, game);
+            return true;
+        }
         if (autoPay && unpaid != null && !mustAsk(abilityToCast, game)) {
             Map<UUID, ActivatedManaAbilityImpl> abilities = new HashMap<>();
             Map<UUID, Permanent> permanents = new HashMap<>();
@@ -287,16 +321,39 @@ public class SeatPlayer extends HumanPlayer {
                 AutoPay.Pick pick = plan.pick();
                 ActivatedManaAbilityImpl ability = abilities.get(pick.output().abilityId());
                 Permanent perm = permanents.get(pick.source().id());
-                // The one ability, so the engine never asks "which" of a source's
-                // several; a colour choice on the way is auto-picked by HumanPlayer
-                // from currentlyUnpaidMana, so that is the one colour the plan wants.
-                currentlyUnpaidMana = colourCost(pick.make(), unpaid);
-                try {
-                    activateAbility(Map.of(ability.getId(), ability), perm, game);
-                } finally {
-                    currentlyUnpaidMana = null;
+                if (pick.costPicks().isEmpty()) {
+                    tap(ability, perm, pick.make(), unpaid, game);
+                    return true;
                 }
-                return true;
+                // A Signet: its cost is paid inside its activation, from the taps
+                // the plan made for it. If the activation fails (its cost could not
+                // be paid after all) the Signet is still untapped, and the payment
+                // goes on without costly abilities.
+                Deque<Planned> previous = costTaps;
+                UUID previousFor = costTapsFor;
+                costTaps = new ArrayDeque<>();
+                for (AutoPay.Pick c : pick.costPicks()) {
+                    costTaps.add(new Planned(abilities.get(c.output().abilityId()), permanents.get(c.source().id()), c.make()));
+                }
+                costTapsFor = perm.getId();
+                try {
+                    tap(ability, perm, pick.make(), unpaid, game);
+                } finally {
+                    costTaps = previous;
+                    costTapsFor = previousFor;
+                }
+                Permanent after = game.getPermanent(perm.getId());
+                if (after != null && after.isTapped()) {
+                    return true;
+                }
+                LOG.warn("autopay: " + perm.getName() + " could not be activated for its mana; paying without costly mana abilities");
+                sources = withoutCostly(sources);
+                plan = AutoPay.plan(pips, sources);
+                if (plan.payable() && (!(plan.ambiguous() || specialPayment) || !askWhenAmbiguous)) {
+                    AutoPay.Pick retry = plan.pick();
+                    tap(abilities.get(retry.output().abilityId()), permanents.get(retry.source().id()), retry.make(), unpaid, game);
+                    return true;
+                }
             }
             if (!plan.payable() && !specialPayment && !anySource(abilityToCast, game) && getManaPool().count() == 0) {
                 // Nothing on the board can pay: cancel the way a person would, with a word.
@@ -305,6 +362,38 @@ public class SeatPlayer extends HumanPlayer {
             }
         }
         return super.playManaHandling(abilityToCast, unpaid, promptText, game);
+    }
+
+    /**
+     * One tap of the plan: the one ability, so the engine never asks "which"
+     * of a source's several; a colour choice on the way is auto-picked by
+     * HumanPlayer from currentlyUnpaidMana, so that is the one colour the
+     * plan wants.
+     */
+    private void tap(ActivatedManaAbilityImpl ability, Permanent perm, AutoPay.Kind make, ManaCost unpaid, Game game) {
+        ManaCost before = currentlyUnpaidMana;
+        currentlyUnpaidMana = colourCost(make, unpaid);
+        try {
+            activateAbility(Map.of(ability.getId(), ability), perm, game);
+        } finally {
+            currentlyUnpaidMana = before;
+        }
+    }
+
+    private static List<AutoPay.Source> withoutCostly(List<AutoPay.Source> sources) {
+        List<AutoPay.Source> out = new ArrayList<>();
+        for (AutoPay.Source s : sources) {
+            List<AutoPay.Output> outputs = new ArrayList<>();
+            for (AutoPay.Output o : s.outputs()) {
+                if (!o.costly()) {
+                    outputs.add(o);
+                }
+            }
+            if (!outputs.isEmpty()) {
+                out.add(new AutoPay.Source(s.id(), s.key() + "|tap-only", outputs, s.clean()));
+            }
+        }
+        return out;
     }
 
     /**
@@ -454,7 +543,11 @@ public class SeatPlayer extends HumanPlayer {
     /**
      * The untapped sources the payer may plan with. A tap-only mana ability
      * (no mana, sacrifice, life or counter cost) never spends anything for
-     * you; an ability with such a cost is nobody's to use but the player.
+     * you; an ability with a sacrifice, life or counter cost is nobody's to
+     * use but the player. A mana cost on top of the tap (a Signet's {1}, a
+     * filter land's hybrid pip) is planned for a pilot only, as more of the
+     * same payment ({@link AutoPay.Output#cost}): a person taps a Signet
+     * themselves.
      * A source is <em>clean</em> when nothing but the mana happens: no
      * effect beyond it (Ancient Tomb's damage), no becomes-tapped trigger
      * (City of Brass), not a creature, no attachment, and unrestricted mana
@@ -480,8 +573,15 @@ public class SeatPlayer extends HumanPlayer {
             }
             List<AutoPay.Output> outputs = new ArrayList<>();
             for (ActivatedManaAbilityImpl ability : getUseableManaAbilities(perm, Zone.BATTLEFIELD, game).values()) {
-                if (ability.getAbilityType() != AbilityType.ACTIVATED_MANA || ability.isPoolDependant() || !tapOnly(ability) || conditional(ability)) {
+                if (ability.getAbilityType() != AbilityType.ACTIVATED_MANA || ability.isPoolDependant() || conditional(ability)) {
                     continue;
+                }
+                List<AutoPay.Pip> cost = List.of();
+                if (!tapOnly(ability)) {
+                    cost = cleanOnly ? null : manaCostOnTap(ability);
+                    if (cost == null) {
+                        continue;
+                    }
                 }
                 if (!cleanAbility(ability)) {
                     if (cleanOnly) {
@@ -501,7 +601,7 @@ public class SeatPlayer extends HumanPlayer {
                     }
                     List<AutoPay.Kind> units = AutoPay.units(m.getWhite(), m.getBlue(), m.getBlack(), m.getRed(), m.getGreen(), m.getColorless(), m.getAny());
                     if (!units.isEmpty()) {
-                        outputs.add(new AutoPay.Output(ability.getId(), units));
+                        outputs.add(new AutoPay.Output(ability.getId(), units, cost));
                         abilities.put(ability.getId(), ability);
                     }
                 }
@@ -599,6 +699,29 @@ public class SeatPlayer extends HumanPlayer {
             }
             sources.put(id, rules);
         }
+    }
+
+    /**
+     * The pips of an ability whose only costs are {T} and mana (a Signet, a
+     * filter land); null for anything else, or a mana cost the planner
+     * doesn't model.
+     */
+    private static List<AutoPay.Pip> manaCostOnTap(ActivatedManaAbilityImpl ability) {
+        if (ability.getManaCosts().isEmpty()) {
+            return null;
+        }
+        boolean tapped = false;
+        for (Cost cost : ability.getCosts()) {
+            if (!(cost instanceof TapSourceCost)) {
+                return null;
+            }
+            tapped = true;
+        }
+        if (!tapped) {
+            return null;
+        }
+        List<AutoPay.Pip> pips = pips(ability.getManaCosts());
+        return pips == null || pips.isEmpty() ? null : pips;
     }
 
     private static boolean tapOnly(ActivatedManaAbilityImpl ability) {
