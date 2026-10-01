@@ -75,7 +75,12 @@ final class ScriptedSeat {
                 manaPrompts++;
                 args.put("choice", "no");
             }
-            case "GAME_TARGET" -> args.put("choice", Boolean.TRUE.equals(d.get("required")) || !choices.isEmpty() ? "0" : "no");
+            case "GAME_TARGET" -> {
+                // The first target not already picked (a pick is offered again,
+                // listed last, and picking it again takes it back).
+                boolean fresh = !choices.isEmpty() && !Boolean.TRUE.equals(choices.get(0).get("chosen"));
+                args.put("choice", fresh || (Boolean.TRUE.equals(d.get("required")) && !choices.isEmpty()) ? "0" : "no");
+            }
             case "GAME_CHOOSE_ABILITY", "GAME_CHOOSE_CHOICE" -> args.put("choice", "0");
             case "GAME_GET_AMOUNT" -> args.put("amount", d.get("min"));
             case "GAME_CHOOSE_PILE" -> args.put("pile", 1);
