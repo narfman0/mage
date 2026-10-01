@@ -135,7 +135,13 @@ public final class Views {
                 matches.add(id);
             }
         }
-        if (matches.size() > 1 && name != null && game != null) {
+        // With the name beside the ref, even a single match must carry it: the
+        // object the ref names may have no short id (an adventure's spell
+        // part — "Stomp [a3f]" — is not the card), and a lone match is then
+        // another object that happens to share three hex digits of a random
+        // UUID, so the source resolved to a stranger in one run and to
+        // nothing in the next (fullpod issue #33, zone-plays).
+        if (!matches.isEmpty() && name != null && game != null) {
             List<UUID> named = new ArrayList<>();
             for (UUID id : matches) {
                 mage.MageObject obj = game.getObject(id);
