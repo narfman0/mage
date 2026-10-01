@@ -289,6 +289,62 @@ public class SnapshotResumeTest {
         await(host, "You", perf); // the records of the last one
     }
 
+    private static GameHost.Config idConfig(Path logDir, String you, String cpu, String snapshotFrom) {
+        return new GameHost.Config("ids", "duel", 7L, logDir.toString(),
+                List.of(new GameHost.SeatSpec(you, "seat", BEARS, 0, 0, "You"), new GameHost.SeatSpec(cpu, "cpu", BEARS, 6, 0, "AI-1")),
+                false, null, 0, 0, "host", snapshotFrom, false);
+    }
+
+    /**
+     * fullpod #24: the host addresses a seat by the product's seat id, never
+     * the engine username — a verb by the username finds no seat — and the
+     * board records each player's id, so a resume matches players to seats by
+     * it, whatever the specs are named; the CPU is found by its id too.
+     */
+    @Test(timeout = 300_000)
+    public void seatsAreAddressedByIdAndABoardResumesByIt() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-ids");
+        Path file = logDir.resolve("board.bin");
+        ScriptedSeat script = new ScriptedSeat();
+        GameHost host = new GameHost(idConfig(logDir, "You-1a", "AI1-1a", null));
+        int turn;
+        try {
+            Assert.assertEquals(List.of("You"), host.seatNames());
+            Assert.assertTrue("the CPU by its id", host.isCpu("AI-1"));
+            Assert.assertFalse("not by its username", host.isCpu("AI1-1a"));
+            Assert.assertThrows(IllegalArgumentException.class, () -> host.state("You-1a"));
+            host.start();
+            turn = turn(playTo(host, script, "You", 2));
+            Snapshot.write(host.game(), host.seatKeys(), file);
+        } finally {
+            host.end();
+        }
+        Snapshot.Board board = Snapshot.read(file);
+        Assert.assertEquals("the board names each player's seat id", java.util.Set.of("You", "AI-1"),
+                new java.util.HashSet<>(board.seatKeys().values()));
+
+        // Specs under other names: matched by id all the same.
+        GameHost h2 = new GameHost(idConfig(logDir, "You-renamed", "AI1-renamed", file.toString()));
+        try {
+            Assert.assertTrue(h2.resumed());
+            Assert.assertEquals(List.of("You"), h2.seatNames());
+            Assert.assertTrue(h2.isCpu("AI-1"));
+            h2.start();
+            Map<String, Object> d = await(h2, "You", new ArrayList<>());
+            Assert.assertEquals("the same question, by the seat's id", turn, turn(d));
+        } finally {
+            h2.end();
+        }
+
+        // An id the board doesn't have is refused, naming what it has.
+        IllegalArgumentException ex = Assert.assertThrows(IllegalArgumentException.class, () -> new GameHost(
+                new GameHost.Config("ids", "duel", 7L, logDir.toString(),
+                        List.of(new GameHost.SeatSpec("You-1a", "seat", BEARS, 0, 0, "P2"),
+                                new GameHost.SeatSpec("AI1-1a", "cpu", BEARS, 6, 0, "AI-1")),
+                        false, null, 0, 0, "host", file.toString(), false)));
+        Assert.assertTrue(ex.getMessage(), ex.getMessage().contains("seat id P2"));
+    }
+
     /**
      * A question asked inside the interval and left open is written when the
      * interval ends (fullpod #25): the board a park finds is the question
@@ -406,9 +462,10 @@ public class SnapshotResumeTest {
             new GameHost(new GameHost.Config("refuse", "duel", 7L, logDir2.toString(),
                     List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("Nobody", "cpu", BEARS, 6)),
                     false, null, 0, 0, "host", from, false));
-            Assert.fail("an unknown name was seated");
+            Assert.fail("an unknown seat was seated");
         } catch (IllegalArgumentException expected) {
-            Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("no player named Nobody"));
+            // The board records seat ids (fullpod #24); a spec given none is keyed by its name.
+            Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("no player with seat id Nobody"));
         }
         // Two seats under one name would both be matched to one saved player,
         // and the guard above would still pass (fullpod issue #24).
@@ -502,7 +559,7 @@ public class SnapshotResumeTest {
         host.start();
         playTo(host, script, "You", 2);
         rekeyPermanent(host.game().getExile(), UUID.randomUUID());
-        long bytes = Snapshot.write(host.game(), Path.of(FOREIGN_FIXTURE));
+        long bytes = Snapshot.write(host.game(), host.seatKeys(), Path.of(FOREIGN_FIXTURE));
         LOG.info("recorded " + FOREIGN_FIXTURE + " (" + bytes + " bytes)");
         host.end();
     }
@@ -532,6 +589,36 @@ public class SnapshotResumeTest {
             Assert.assertFalse(line, line.contains("Auto-restored") || line.contains("game error"));
         }
         h2.end();
+    }
+
+    /**
+     * The upgrade (fullpod #24): a board saved before seat ids were recorded
+     * — the foreign fixture is one — resumed by a product that now gives
+     * every seat its id. The players are matched by name, as they were
+     * saved, and the seats are addressed by id from then on.
+     */
+    @Test(timeout = 120_000)
+    public void aBoardFromBeforeIdsResumesByNameAndIsAddressedById() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-v1");
+        GameHost h2;
+        try {
+            h2 = new GameHost(new GameHost.Config("foreign", "duel", 7L, logDir.toString(),
+                    List.of(new GameHost.SeatSpec("You", "seat", PATHS, 0, 0, "P1"), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6, 0, "AI-1")),
+                    false, null, 0, 0, "host", Path.of(FOREIGN_FIXTURE).toAbsolutePath().toString(), false));
+        } catch (InvalidClassException ex) {
+            throw new AssertionError("the fixture no longer reads (a serialized class changed shape): "
+                    + "re-record it with recordForeignFixture's command. " + ex, ex);
+        }
+        try {
+            Assert.assertTrue(h2.resumed());
+            Assert.assertEquals(List.of("P1"), h2.seatNames());
+            Assert.assertTrue("the CPU by its id", h2.isCpu("AI-1"));
+            Assert.assertEquals("its keys are the ids now", java.util.Set.of("P1", "AI-1"), new java.util.HashSet<>(h2.seatKeys().values()));
+            h2.start();
+            Assert.assertTrue(Boolean.TRUE.equals(await(h2, "P1", new ArrayList<>()).get("action_pending")));
+        } finally {
+            h2.end();
+        }
     }
 
     @Test
@@ -659,7 +746,7 @@ public class SnapshotResumeTest {
                     lastTurn = turn;
                     lastRoots = roots;
                     long t0 = System.currentTimeMillis();
-                    long bytes = Snapshot.write(host.game(), file);
+                    long bytes = Snapshot.write(host.game(), host.seatKeys(), file);
                     long ms = System.currentTimeMillis() - t0;
                     long trees = 0;
                     for (Object root : roots.values()) {

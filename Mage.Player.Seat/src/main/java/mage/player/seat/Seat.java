@@ -17,7 +17,8 @@ final class Seat {
     record Step(StepKind kind, UUID id) {
     }
 
-    final String name;
+    /** What the host addresses the seat by (GameHost.SeatSpec.key: the product's seat id, fullpod #24). */
+    final String key;
     final SeatPlayer player;
     final Object lock = new Object();
     /** The batch the seat asked for (attackers=..., blockers=...), consumed as the engine re-asks. */
@@ -51,8 +52,8 @@ final class Seat {
         payingTax = false;
     }
 
-    Seat(String name, SeatPlayer player, boolean offerManaSources) {
-        this.name = name;
+    Seat(String key, SeatPlayer player, boolean offerManaSources) {
+        this.key = key;
         this.player = player;
         this.offerManaSources = offerManaSources;
     }
