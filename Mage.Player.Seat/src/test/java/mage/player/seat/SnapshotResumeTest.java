@@ -290,6 +290,36 @@ public class SnapshotResumeTest {
     }
 
     /**
+     * A question asked inside the interval and left open is written when the
+     * interval ends (fullpod #25): the board a park finds is the question
+     * the person walked away from, not the last one written before it.
+     */
+    @Test(timeout = 300_000)
+    public void aQuestionLeftOpenInsideTheIntervalIsWrittenWhenItEnds() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-interval-end");
+        GameHost host = new GameHost(config("interval-end", logDir, "cpu", null));
+        host.setSnapshotDebounceMs(0);
+        host.setSnapshotIntervalMs(8_000);
+        ScriptedSeat script = new ScriptedSeat();
+        List<Map<String, Object>> perf = new ArrayList<>();
+        host.start();
+        try {
+            answerSlowly(host, script, 4, perf); // the first is written; the next ones are inside the interval
+            int open = host.game().getGameSeq();
+            Assert.assertNotEquals("the open question isn't the file yet", open, host.snapshotStatus().get("seq"));
+            Map<String, Object> status = host.snapshotStatus();
+            for (int i = 0; i < 400 && !Integer.valueOf(open).equals(status.get("seq")) && status.get("error") == null; i++) {
+                Thread.sleep(50);
+                status = host.snapshotStatus();
+            }
+            Assert.assertNull("snapshot error: " + status, status.get("error"));
+            Assert.assertEquals("the question left open, once the interval is over", open, status.get("seq"));
+        } finally {
+            host.end();
+        }
+    }
+
+    /**
      * At most one completed write an interval, however many questions stay
      * open past the debounce; without the interval, every one is written,
      * and each once.
