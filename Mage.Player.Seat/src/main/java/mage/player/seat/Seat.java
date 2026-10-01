@@ -36,6 +36,8 @@ final class Seat {
     /** An attack cost's question was passed to the person: its mana prompt and the rest are theirs until the attackers window returns. */
     boolean payingTax;
     volatile boolean offerManaSources;
+    /** The seat conceded: it is asked nothing more, and every result says so. */
+    volatile boolean conceded;
     private Decision pending;
     private final List<String> chat = new ArrayList<>();
 
@@ -80,6 +82,18 @@ final class Seat {
             if (pending == answered) {
                 pending = null;
             }
+        }
+    }
+
+    /**
+     * Forgets whatever question is open, unconditionally: the seat conceded,
+     * so the question it was asked will never be answered and must not be
+     * handed out again.
+     */
+    void dropPending() {
+        synchronized (lock) {
+            pending = null;
+            lock.notifyAll();
         }
     }
 
