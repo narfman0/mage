@@ -188,6 +188,51 @@ public class AutoPayTest {
         Assert.assertFalse(only.pick().source().clean());
     }
 
+    /** Boros Signet: {1}, {T}: add {R}{W} (a pilot's source; a person taps it themselves). */
+    private static Source signet(String name) {
+        List<Output> outs = List.of(new Output(UUID.randomUUID(), List.of(Kind.R, Kind.W), List.of(Pip.generic())));
+        return new Source(UUID.nameUUIDFromBytes(name.getBytes()), AutoPay.key(outs, null, true), outs, true);
+    }
+
+    /**
+     * Kaalia of the Vast, {1}{R}{W}{B}, off a Boros Signet, a Plains and two
+     * Swamps (fullpod issue #31): only the Signet makes red, so it is tapped
+     * first, and one land is tapped into it for its {1} inside the
+     * activation; the rest is planned again after.
+     */
+    @Test
+    public void aSignetIsTappedWithABasicIntoIt() {
+        Plan p = plan("1RWB", signet("signet"), basic(Kind.W), basic(Kind.B), basic(Kind.B));
+        Assert.assertTrue("payable: " + p, p.payable());
+        Assert.assertFalse("one way, tapping out: " + p, p.ambiguous());
+        Assert.assertEquals(signet("signet").key(), p.pick().source().key());
+        Assert.assertEquals("one land for the Signet's {1}: " + p, 1, p.pick().costPicks().size());
+        Assert.assertFalse(p.pick().costPicks().get(0).output().costly());
+        // Three lands and a Signet are not four mana: the Signet's {1} comes from them.
+        Assert.assertFalse(plan("1RWB", signet("signet"), basic(Kind.W), basic(Kind.B)).payable());
+        // A Signet can't pay its own cost.
+        Assert.assertFalse(plan("R", signet("signet")).payable());
+        // Nor can one Signet's mana pay another's: two Signets and a Swamp make {R}{W}, not {R}{W}{R}{W}.
+        Assert.assertFalse(plan("RWR", signet("a"), signet("b"), basic(Kind.B)).payable());
+    }
+
+    /**
+     * {2} from a Signet, a Plains and a Swamp: tapping both lands would leave
+     * a Signet nothing can pay for, so the pilot taps a land into the Signet
+     * and keeps the other land up. With lands to spare the Signet stays up.
+     */
+    @Test
+    public void aSignetLeftUpWithNoLandIsWorthNothing() {
+        Plan p = plan("2", signet("signet"), basic(Kind.W), basic(Kind.B));
+        Assert.assertTrue("payable: " + p, p.payable());
+        Assert.assertEquals("the Signet first: " + p, signet("signet").key(), p.pick().source().key());
+        Assert.assertEquals(1, p.pick().costPicks().size());
+        Plan spare = plan("1", signet("signet"), basic(Kind.W), basic(Kind.W), basic(Kind.W));
+        Assert.assertTrue(spare.payable());
+        Assert.assertNotEquals(signet("signet").key(), spare.pick().source().key());
+        Assert.assertTrue(spare.pick().costPicks().isEmpty());
+    }
+
     @Test
     public void bigBoardStaysFast() {
         List<Source> board = new ArrayList<>();
