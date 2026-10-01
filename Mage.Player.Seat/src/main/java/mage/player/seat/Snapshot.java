@@ -12,6 +12,9 @@ import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -30,20 +33,30 @@ import java.util.zip.GZIPOutputStream;
  *
  * A file is written whole then moved into place, so a reader never sees a
  * partial one. The version is this engine's format; a snapshot is also only
- * as portable as the classes it names, so the product refuses one from
- * another engine pin (fullpod docs/save-resume.md).
+ * as portable as the classes it names, so the product never loads one on
+ * another engine pin — it replays the game's record there instead (fullpod
+ * docs/save-resume.md "Across an engine pin"). Format 2 records each
+ * player's seat id ahead of the game (fullpod #24); format 1 still reads.
  */
 final class Snapshot {
 
     static final String FILE = "snapshot.bin";
-    private static final int VERSION = 1;
+    // 2: each player's seat key (the product's seat id, fullpod #24) is
+    // written before the game, so a resume matches players to seats by id.
+    // 1 had the game only; it still reads, and its players are matched by name.
+    private static final int VERSION = 2;
+    private static final int VERSION_NAMES_ONLY = 1;
 
     private Snapshot() {
     }
 
+    /** A board read back: the game and its players' seat keys by player id (null on a format-1 file). */
+    record Board(Game game, Map<UUID, String> seatKeys) {
+    }
+
     /** Writes the game to {@code path}; the file's size in bytes. */
-    static long write(Game game, Path path) throws IOException {
-        return write(game, path, () -> false);
+    static long write(Game game, Map<UUID, String> seatKeys, Path path) throws IOException {
+        return write(game, seatKeys, path, () -> false);
     }
 
     /** A write given up because {@code abort} said so; the previous file is untouched. */
@@ -59,7 +72,7 @@ final class Snapshot {
      * serializer hands down, so a write stops within milliseconds, the temp file is
      * deleted and whatever was at {@code path} stays.
      */
-    static long write(Game game, Path path, BooleanSupplier abort) throws IOException {
+    static long write(Game game, Map<UUID, String> seatKeys, Path path, BooleanSupplier abort) throws IOException {
         Path dir = path.toAbsolutePath().getParent();
         Files.createDirectories(dir);
         Path tmp = dir.resolve(path.getFileName() + ".tmp");
@@ -69,6 +82,7 @@ final class Snapshot {
             try (ObjectOutputStream out = new ObjectOutputStream(new Abortable(new BufferedOutputStream(
                     new GZIPOutputStream(new BufferedOutputStream(Files.newOutputStream(tmp))), 64 * 1024), abort))) {
                 out.writeInt(VERSION);
+                out.writeObject(new HashMap<>(seatKeys));
                 out.writeObject(game);
             }
         } catch (IOException | RuntimeException ex) {
@@ -107,13 +121,18 @@ final class Snapshot {
         }
     }
 
-    static Game read(Path path) throws IOException, ClassNotFoundException {
+    @SuppressWarnings("unchecked")
+    static Board read(Path path) throws IOException, ClassNotFoundException {
         try (ObjectInputStream in = new ObjectInputStream(new GZIPInputStream(new BufferedInputStream(Files.newInputStream(path))))) {
             int version = in.readInt();
-            if (version != VERSION) {
-                throw new IOException("snapshot format " + version + "; this engine reads " + VERSION);
+            if (version == VERSION_NAMES_ONLY) {
+                return new Board((Game) in.readObject(), null);
             }
-            return (Game) in.readObject();
+            if (version != VERSION) {
+                throw new IOException("snapshot format " + version + "; this engine reads " + VERSION_NAMES_ONLY + " and " + VERSION);
+            }
+            Map<UUID, String> seatKeys = (Map<UUID, String>) in.readObject();
+            return new Board((Game) in.readObject(), seatKeys);
         }
     }
 }

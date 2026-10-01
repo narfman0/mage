@@ -223,6 +223,17 @@ public class GameHostTest {
                 Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("two seats are named You"));
             }
         }
+        // Two names, one seat id (fullpod #24): the host addresses seats by id.
+        for (String otherKind : List.of("seat", "cpu")) {
+            try {
+                new GameHost(new GameHost.Config("twins", "duel", 3L, null,
+                        List.of(new GameHost.SeatSpec("You-1", "seat", BEARS, 0, 0, "P2"),
+                                new GameHost.SeatSpec("AI1-1", otherKind, BEARS, 6, 0, "P2")), false));
+                Assert.fail("two seats keyed P2 were made (" + otherKind + ")");
+            } catch (IllegalArgumentException expected) {
+                Assert.assertTrue(expected.getMessage(), expected.getMessage().contains("two seats are keyed P2"));
+            }
+        }
     }
 
     /**

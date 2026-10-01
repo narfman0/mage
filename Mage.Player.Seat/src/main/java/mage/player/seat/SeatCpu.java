@@ -67,6 +67,12 @@ public class SeatCpu extends ComputerPlayer7 {
         void thought(long ms);
 
         void record(Map<String, Object> record);
+
+        /** The host's key for this CPU's seat (fullpod #24): what its records name it by. Here, not a
+         *  field of SeatCpu, so the class a saved board names keeps its serial form. */
+        default String seatKey() {
+            return null;
+        }
     }
 
     /** The steps ComputerPlayer7 simulates at; everywhere else it passes without a think. */
@@ -138,6 +144,12 @@ public class SeatCpu extends ComputerPlayer7 {
         this.hooks = hooks;
     }
 
+    /** What its perf records name it by: the host's key for the seat (fullpod #24), else its name. */
+    private String seatKey() {
+        String key = hooks == null ? null : hooks.seatKey();
+        return key != null ? key : getName();
+    }
+
     /** The seat's think cap, whole seconds (the engine waits in seconds); at least 1. Takes effect at the next think. */
     public void setMaxThinkSecs(int secs) {
         this.capSecs = Math.max(1, secs);
@@ -196,7 +208,7 @@ public class SeatCpu extends ComputerPlayer7 {
             if (hooks != null && windowThinks > 0) {
                 Map<String, Object> r = new LinkedHashMap<>();
                 r.put("kind", "cpu_window");
-                r.put("seat", getName());
+                r.put("seat", seatKey());
                 r.put("ms", ms);
                 r.put("thinks", windowThinks);
                 hooks.record(r);
@@ -241,7 +253,7 @@ public class SeatCpu extends ComputerPlayer7 {
     private Map<String, Object> loopRecord(Game game) {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("kind", "cpu_loop_break");
-        r.put("seat", getName());
+        r.put("seat", seatKey());
         r.put("turn", game.getTurnNum());
         r.put("step", game.getTurnStepType() == null ? null : game.getTurnStepType().name());
         r.put("action", actions.isEmpty() ? null : actions.getFirst().toString());
@@ -310,7 +322,7 @@ public class SeatCpu extends ComputerPlayer7 {
     private Map<String, Object> thinkRecord(long ms, int cap, boolean memoed) {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("kind", "cpu_think");
-        r.put("seat", getName());
+        r.put("seat", seatKey());
         Game g = current;
         if (g != null) {
             try {

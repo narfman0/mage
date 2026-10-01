@@ -165,7 +165,10 @@ public final class SeatHost {
                 for (Map<String, Object> s : (List<Map<String, Object>>) args.get("seats")) {
                     seats.add(new GameHost.SeatSpec(String.valueOf(s.get("name")), String.valueOf(s.getOrDefault("kind", "seat")),
                             String.valueOf(s.get("deck")), s.get("skill") == null ? 0 : ((Number) s.get("skill")).intValue(),
-                            s.get("max_think_secs") == null ? 0 : ((Number) s.get("max_think_secs")).intValue()));
+                            s.get("max_think_secs") == null ? 0 : ((Number) s.get("max_think_secs")).intValue(),
+                            // The product's seat id ("You", "P2", "AI-1"): what every verb's
+                            // `seat` names from here on (fullpod #24). Absent: the name.
+                            s.get("id") == null ? null : String.valueOf(s.get("id"))));
                 }
                 Object seed = args.get("seed");
                 GameHost.Config cfg = new GameHost.Config(gameId, String.valueOf(args.getOrDefault("format", "duel")),

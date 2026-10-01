@@ -64,9 +64,23 @@ public final class GameHost {
      * A CPU's {@code skill} sets its search depth (at least 4) and, unless
      * {@code maxThinkSecs} is given, its think cap (3 s a point, upstream's rule).
      */
-    public record SeatSpec(String name, String kind, String deck, int skill, int maxThinkSecs) {
+    public record SeatSpec(String name, String kind, String deck, int skill, int maxThinkSecs, String id) {
         public SeatSpec(String name, String kind, String deck, int skill) {
-            this(name, kind, deck, skill, 0);
+            this(name, kind, deck, skill, 0, null);
+        }
+
+        public SeatSpec(String name, String kind, String deck, int skill, int maxThinkSecs) {
+            this(name, kind, deck, skill, maxThinkSecs, null);
+        }
+
+        /**
+         * What the host addresses this seat by (fullpod #24): the product's
+         * seat id ("You", "P2", "AI-1") when it gives one, else the name. The
+         * name is the engine username — what XMage prints in its own log and
+         * tells players apart by — and nothing else.
+         */
+        public String key() {
+            return id != null && !id.isBlank() ? id : name;
         }
     }
 
@@ -111,7 +125,10 @@ public final class GameHost {
     private final Views views;
     private final DecisionRenderer renderer;
     private final Map<UUID, Seat> seatsById = new LinkedHashMap<>();
-    private final Map<String, Seat> seatsByName = new LinkedHashMap<>();
+    private final Map<String, Seat> seatsByKey = new LinkedHashMap<>();
+    // Every player's seat key, CPUs included: what a snapshot records beside
+    // the game so a resume matches its players to seats by id (fullpod #24).
+    private final Map<UUID, String> keysByPlayer = new LinkedHashMap<>();
     private final List<Player> players = new ArrayList<>();
     private final List<String> logLines = Collections.synchronizedList(new ArrayList<>());
     private final ExecutorService auto = Executors.newSingleThreadExecutor(r -> {
@@ -212,30 +229,34 @@ public final class GameHost {
     }
 
     /**
-     * The host addresses a seat by its engine username (every verb takes the
-     * name; the CPUs and a snapshot's players are matched by it too), so two
-     * seats with one name would leave one of them unreachable: refused before
-     * anything is built or read, rather than the second overwriting the first.
-     * A seat id that cannot collide is the fix this stands in for (fullpod
-     * issue #24).
+     * Every seat needs its own key — the host addresses a seat by it (every
+     * verb, the CPUs, a snapshot's players; fullpod #24) — and its own name,
+     * which XMage's log and the replay feeder tell players apart by. Two of
+     * either are refused before anything is built or read, rather than the
+     * second overwriting the first.
      */
     private static void requireDistinctNames(List<SeatSpec> seats) {
+        java.util.Set<String> keys = new java.util.HashSet<>();
         java.util.Set<String> names = new java.util.HashSet<>();
         for (SeatSpec spec : seats) {
             if (!names.add(spec.name())) {
                 throw new IllegalArgumentException("two seats are named " + spec.name()
-                        + ": the host addresses a seat by its name, so every seat needs its own");
+                        + ": the engine tells players apart by name, so every seat needs its own");
+            }
+            if (!keys.add(spec.key())) {
+                throw new IllegalArgumentException("two seats are keyed " + spec.key()
+                        + ": the host addresses a seat by its id, so every seat needs its own");
             }
         }
     }
 
-    /** A put that refuses a second value under one name instead of overwriting the first in silence. */
-    private static <V> void putOnce(Map<String, V> map, String name, V value, String what) {
-        if (map.containsKey(name)) {
-            throw new IllegalArgumentException("two " + what + " are named " + name
-                    + ": the host addresses a seat by its name, so every seat needs its own");
+    /** A put that refuses a second value under one key instead of overwriting the first in silence. */
+    private static <V> void putOnce(Map<String, V> map, String key, V value, String what) {
+        if (map.containsKey(key)) {
+            throw new IllegalArgumentException("two " + what + " are keyed " + key
+                    + ": the host addresses a seat by its id, so every seat needs its own");
         }
-        map.put(name, value);
+        map.put(key, value);
     }
 
     /** A new game the way XMage's own tests make one: players and decks added, a match for the AI's simulations. */
@@ -270,17 +291,18 @@ public final class GameHost {
                 if (spec.maxThinkSecs() > 0) {
                     cpu.setMaxThinkSecs(spec.maxThinkSecs());
                 }
-                cpu.setHooks(cpuHooks);
-                putOnce(cpus, spec.name(), cpu, "CPUs");
+                cpu.setHooks(hooksFor(spec.key()));
+                putOnce(cpus, spec.key(), cpu, "CPUs");
                 player = cpu;
             } else {
                 SeatPlayer seat = new SeatPlayer(spec.name(), range);
                 seat.setAskWhenAmbiguous(config.offerManaSources());
                 player = seat;
-                Seat s = new Seat(spec.name(), seat, config.offerManaSources());
+                Seat s = new Seat(spec.key(), seat, config.offerManaSources());
                 seatsById.put(seat.getId(), s);
-                putOnce(seatsByName, spec.name(), s, "seats");
+                putOnce(seatsByKey, spec.key(), s, "seats");
             }
+            keysByPlayer.put(player.getId(), spec.key());
             DeckCardLists list = DeckImporter.importDeckFromFile(spec.deck(), true);
             Deck deck = Deck.load(list, false, false, null);
             g.loadCards(deck.getCards(), player.getId());
@@ -303,41 +325,52 @@ public final class GameHost {
 
     /**
      * A game read back from a snapshot: its players are the seats. Every
-     * player in the snapshot needs a spec of the same name; a `seat` spec
+     * player in the snapshot needs a spec with its seat id (the board
+     * records each player's, fullpod #24) — or, on a board from before ids
+     * were recorded, a spec of the same name; a `seat` spec
      * over a CPU player takes it over (SeatPlayer(PlayerImpl) — same id,
      * same state), and a `cpu` spec over a seat is refused (a person's
      * questions can't be handed to the CPU mid-game).
      */
-    private Game adopt(Game g) {
+    private Game adopt(Snapshot.Board board) {
+        Game g = board.game();
         g.getOptions().gameLogDir = config.gameLogDir();
         g.getOptions().replayFrom = null;
-        Map<String, Player> byName = new LinkedHashMap<>();
+        boolean byId = board.seatKeys() != null;
+        String by = byId ? "seat id" : "name";
+        Map<String, Player> byKey = new LinkedHashMap<>();
         for (Player p : g.getPlayers().values()) {
-            putOnce(byName, p.getName(), p, "players in the snapshot");
+            String key = byId ? board.seatKeys().get(p.getId()) : p.getName();
+            if (key == null) {
+                throw new IllegalArgumentException("the snapshot records no seat id for " + p.getName());
+            }
+            putOnce(byKey, key, p, "players in the snapshot");
         }
         java.util.Set<String> seen = new java.util.HashSet<>();
         for (SeatSpec spec : config.seats()) {
-            Player p = byName.get(spec.name());
+            String key = byId ? spec.key() : spec.name();
+            Player p = byKey.get(key);
             if (p == null) {
-                throw new IllegalArgumentException("the snapshot has no player named " + spec.name() + " (it has " + byName.keySet() + ")");
+                throw new IllegalArgumentException("the snapshot has no player with " + by + " " + key + " (it has " + byKey.keySet() + ")");
             }
-            seen.add(spec.name());
+            seen.add(key);
+            keysByPlayer.put(p.getId(), spec.key());
             if ("cpu".equals(spec.kind())) {
                 if (!(p instanceof ComputerPlayer)) {
                     throw new IllegalArgumentException(spec.name() + " was a seat in the snapshot; it can't become the CPU");
                 }
                 // The file's cap is the one it was written with; the spec's wins.
                 if (p instanceof SeatCpu cpu) {
-                    cpu.setHooks(cpuHooks);
+                    cpu.setHooks(hooksFor(spec.key()));
                     if (spec.maxThinkSecs() > 0) {
                         cpu.setMaxThinkSecs(spec.maxThinkSecs());
                     }
-                    putOnce(cpus, spec.name(), cpu, "CPUs");
+                    putOnce(cpus, spec.key(), cpu, "CPUs");
                 } else if (p instanceof mage.player.ai.ComputerPlayer6 cp6) {
                     if (spec.maxThinkSecs() > 0) {
                         cp6.setMaxThinkTimeSecs(spec.maxThinkSecs());
                     }
-                    putOnce(cpus, spec.name(), cp6, "CPUs");
+                    putOnce(cpus, spec.key(), cp6, "CPUs");
                 }
                 continue;
             }
@@ -347,15 +380,15 @@ public final class GameHost {
             } else {
                 seat = new SeatPlayer((PlayerImpl) p);
                 g.getState().getPlayers().put(seat.getId(), seat);
-                swapped.add(spec.name());
+                swapped.add(spec.key());
             }
             seat.setAskWhenAmbiguous(config.offerManaSources());
-            Seat s = new Seat(spec.name(), seat, config.offerManaSources());
+            Seat s = new Seat(spec.key(), seat, config.offerManaSources());
             seatsById.put(seat.getId(), s);
-            putOnce(seatsByName, spec.name(), s, "seats");
+            putOnce(seatsByKey, spec.key(), s, "seats");
         }
-        if (!seen.containsAll(byName.keySet())) {
-            throw new IllegalArgumentException("every player in the snapshot needs a seat: " + byName.keySet() + ", given " + seen);
+        if (!seen.containsAll(byKey.keySet())) {
+            throw new IllegalArgumentException("every player in the snapshot needs a seat: " + byKey.keySet() + ", given " + seen);
         }
         players.addAll(g.getPlayers().values());
         return g;
@@ -379,9 +412,14 @@ public final class GameHost {
         return logLines;
     }
 
-    /** Every seat, one name each: a second seat under a name is refused when it is put, never dropped here. */
+    /** Every player's seat key by player id, CPUs included: what a snapshot records (Snapshot.Board). */
+    Map<UUID, String> seatKeys() {
+        return java.util.Collections.unmodifiableMap(keysByPlayer);
+    }
+
+    /** Every seat (not the CPUs) by its key — its id, or its name when it was given none; a second seat under a key is refused when it is put, never dropped here. */
     public List<String> seatNames() {
-        return new ArrayList<>(seatsByName.keySet());
+        return new ArrayList<>(seatsByKey.keySet());
     }
 
     /**
@@ -527,7 +565,7 @@ public final class GameHost {
         try {
             seat.deliver(renderer.render(game, seat.player, e, seq, seat.offerManaSources));
         } catch (RuntimeException ex) {
-            LOG.error("rendering " + e.getQueryType() + " for " + seat.name, ex);
+            LOG.error("rendering " + e.getQueryType() + " for " + seat.key, ex);
             Map<String, Object> r = new LinkedHashMap<>();
             r.put("action_pending", true);
             r.put("game_seq", seq);
@@ -837,7 +875,7 @@ public final class GameHost {
             if (waited > 100) {
                 Map<String, Object> r = new LinkedHashMap<>();
                 r.put("kind", "answer_blocked");
-                r.put("seat", seat.name);
+                r.put("seat", seat.key);
                 r.put("ms", waited);
                 r.put("by", writing ? "snapshot" : "lock");
                 perf(r);
@@ -848,10 +886,11 @@ public final class GameHost {
 
     // ---- the host API ------------------------------------------------------
 
-    private Seat seat(String name) {
-        Seat seat = seatsByName.get(name);
+    /** The seat a verb names by its key (SeatSpec.key: the seat id, fullpod #24). */
+    private Seat seat(String key) {
+        Seat seat = seatsByKey.get(key);
         if (seat == null) {
-            throw new IllegalArgumentException("no such seat: " + name);
+            throw new IllegalArgumentException("no such seat: " + key);
         }
         return seat;
     }
@@ -1002,6 +1041,31 @@ public final class GameHost {
             perf(record);
         }
     };
+
+    /** The table's CPU hooks for one CPU seat, which its records name by {@code key} (fullpod #24). */
+    private SeatCpu.Hooks hooksFor(String key) {
+        return new SeatCpu.Hooks() {
+            @Override
+            public int capFor(int seatCapSecs) {
+                return cpuHooks.capFor(seatCapSecs);
+            }
+
+            @Override
+            public void thought(long ms) {
+                cpuHooks.thought(ms);
+            }
+
+            @Override
+            public void record(Map<String, Object> record) {
+                cpuHooks.record(record);
+            }
+
+            @Override
+            public String seatKey() {
+                return key;
+            }
+        };
+    }
 
     /**
      * The CPUs' window is over: a seat answered (or the turn changed). One
@@ -1163,7 +1227,7 @@ public final class GameHost {
             if (isHeld(args.get("held"))) {
                 windowHeld.incrementAndGet();
             } else {
-                endWindow(seat.name);
+                endWindow(seat.key);
             }
             String type = d.actionType();
             String taken;
@@ -1848,7 +1912,7 @@ public final class GameHost {
             }
             java.util.function.IntConsumer probe = writeProbe;
             try {
-                long bytes = Snapshot.write(game, snapshotPath, () -> {
+                long bytes = Snapshot.write(game, keysByPlayer, snapshotPath, () -> {
                     if (probe != null) {
                         probe.accept(seq);
                     }
