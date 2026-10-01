@@ -1785,10 +1785,13 @@ public final class GameHost {
      * a buffer, the previous file stays, and the answer goes through.
      *
      * The cadence: nothing is written within {@code snapshotIntervalMs} of
-     * the last completed write, and a write is held — not given up for an
-     * answer, which waits for it — when one has already been given up and
-     * the file is {@code snapshotStaleMs} old. The command
-     * ({@link #snapshotNow}) writes regardless of both.
+     * the last completed write — a question asked inside it waits for the
+     * interval to end like the debounce, and is written then if it is still
+     * open (fullpod #25: the question a person walks away from is the board
+     * a park leaves, not the one twenty seconds before it) — and a write is
+     * held — not given up for an answer, which waits for it — when one has
+     * already been given up and the file is {@code snapshotStaleMs} old. The
+     * command ({@link #snapshotNow}) writes regardless of both.
      */
     private void writeSnapshot() {
         writeSnapshot(snapshotDebounceMs, false);
@@ -1800,9 +1803,6 @@ public final class GameHost {
             return;
         }
         long done = snapshotDoneAt;
-        if (!command && done != 0 && System.currentTimeMillis() - done < snapshotIntervalMs) {
-            return; // written recently enough: the next question after the interval writes
-        }
         long asked = System.currentTimeMillis();
         long until = asked + 2_000;
         while (!(parked(t) && anyPending())) {
@@ -1820,6 +1820,11 @@ public final class GameHost {
             return; // answered already, or this question is the file
         }
         long waitUntil = asked + debounceMs;
+        if (!command && done != 0) {
+            // Written recently: this question waits out the interval, and
+            // any answer before then lets it go (the next question waits).
+            waitUntil = Math.max(waitUntil, done + snapshotIntervalMs);
+        }
         while (System.currentTimeMillis() < waitUntil) {
             if (answers.get() != answered || game.getGameSeq() != seq || game.hasEnded()) {
                 return; // answered at once: the next question writes, if it stays open
