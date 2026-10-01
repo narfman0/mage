@@ -19,6 +19,7 @@ import mage.game.Game;
 import mage.game.combat.Combat;
 import mage.game.events.GameEvent;
 import mage.game.permanent.Permanent;
+import mage.game.ExileZone;
 import mage.game.stack.StackAbility;
 import mage.game.stack.StackObject;
 import mage.player.ai.mad.optimizers.TreeOptimizer;
@@ -255,6 +256,15 @@ public class ComputerPlayer6 extends ComputerPlayer {
             if (allPassed(game)) {
                 if (!game.getStack().isEmpty()) {
                     resolve(node, depth, game);
+                    if (isNoOp(node, game)) {
+                        // The ability resolved and left the board as it found it (Seeker of
+                        // Skybreak untapping itself): doing it is doing nothing, so it is
+                        // not an option. Scored, it ties with passing and the passivity
+                        // penalty makes it the choice -- at every priority, forever.
+                        logger.debug("Sim Prio [" + depth + "] -- no-op action: " + node.getAbilities());
+                        node.setScore(NO_OP_SCORE);
+                        return NO_OP_SCORE;
+                    }
                 } else {
                     stepFinished = true;
                 }
@@ -350,6 +360,9 @@ public class ComputerPlayer6 extends ComputerPlayer {
                 break;
             }
             int val = addActions(child, depth - 1, alpha, beta);
+            if (val == NO_OP_SCORE) {
+                continue; // the board as it was: not an option (isNoOp)
+            }
             if (!currentPlayerId.equals(playerId)) {
                 if (val < beta) {
                     beta = val;
@@ -573,6 +586,9 @@ public class ComputerPlayer6 extends ComputerPlayer {
                     finalScore = addActions(newNode, depth - 1, alpha, beta);
                 }
                 logger.debug("Sim Prio " + BLANKS.substring(0, 2 + (maxDepth - depth) * 3) + '[' + depth + "]#" + actionNumber + " <" + finalScore + "> - (" + action + ") ");
+                if (finalScore == NO_OP_SCORE) {
+                    continue; // the board as it was: not an option (isNoOp)
+                }
 
                 // Hints on data:
                 // * node - started game with executed command (pay and put on stack)
@@ -1187,6 +1203,60 @@ public class ComputerPlayer6 extends ComputerPlayer {
             sim.getState().getPlayers().put(oldPlayer.getId(), simPlayer);
         }
         return sim;
+    }
+
+    /** The score of an action that changed nothing: never chosen, skipped by the search (isNoOp). */
+    protected static final int NO_OP_SCORE = Integer.MIN_VALUE;
+
+    /**
+     * The action this node is resolved to the board its parent started from:
+     * an activated ability (a spell at least leaves the hand) that this player
+     * chose, resolved, and the board, hands, graveyards, exile and the rest of
+     * the stack the same as before it was activated. (In response to an
+     * opponent's spell the stack is not empty afterwards: it is the same.)
+     */
+    private boolean isNoOp(SimulationNode2 node, Game game) {
+        if (node.getParent() == null
+                || node.getParent().getGame() == null
+                || node.getAbilities() == null
+                || node.getAbilities().isEmpty()
+                || !node.getPlayerId().equals(playerId)
+                || game.checkIfGameIsOver()) {
+            return false;
+        }
+        for (Ability ability : node.getAbilities()) {
+            if (!(ability instanceof ActivatedAbility) || ability instanceof PassAbility || ability instanceof SpellAbility) {
+                return false;
+            }
+        }
+        return boardValue(node.getParent().getGame()).equals(boardValue(game));
+    }
+
+    /**
+     * The board as a string, for isNoOp: what GameState.getValue(true, game)
+     * holds except whose priority it is and who has passed, which resolving
+     * anything changes.
+     */
+    protected static String boardValue(Game game) {
+        StringBuilder sb = new StringBuilder();
+        for (Player player : game.getPlayers().values()) {
+            sb.append(player.getId()).append(player.getLife()).append("hand").append(player.getHand().getValue(game))
+                    .append("library").append(player.getLibrary().size())
+                    .append("graveyard").append(player.getGraveyard().getValue(game));
+        }
+        List<String> perms = new ArrayList<>();
+        for (Permanent permanent : game.getBattlefield().getAllPermanents()) {
+            perms.add(permanent.getValue(game.getState()));
+        }
+        Collections.sort(perms);
+        sb.append("permanents").append(perms);
+        for (StackObject spell : game.getStack()) {
+            sb.append(spell.getControllerId()).append(spell.getName());
+        }
+        for (ExileZone zone : game.getExile().getExileZones()) {
+            sb.append("exile").append(zone.getName()).append(zone);
+        }
+        return sb.toString();
     }
 
     private boolean checkForRepeatedAction(Game sim, SimulationNode2 node, Ability action, UUID playerId) {

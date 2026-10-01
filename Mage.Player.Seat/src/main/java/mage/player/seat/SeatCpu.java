@@ -13,8 +13,10 @@ import mage.player.ai.ComputerPlayer7;
 import mage.player.ai.SimulationNode2;
 import mage.target.Target;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +47,13 @@ import java.util.UUID;
  * true}. Anything of its own changing, a different trigger or a spell on
  * top misses the memo and thinks as before. Its own triggers never memo.
  *
+ * <b>The loop guard</b> (report 078b7f4b49): a think that chooses the same
+ * thing at the same board for the fourth time in a step is a loop the search
+ * does not see (Seeker of Skybreak untapping itself, 2,340 times over 18
+ * minutes — the search itself no longer offers an action that changes
+ * nothing, ComputerPlayer6.isNoOp; this is the backstop for the cycles it
+ * can't see). The act becomes a pass, recorded as {@code cpu_loop_break}.
+ *
  * Only this module changes: upstream's CPU is extended, never edited.
  */
 public class SeatCpu extends ComputerPlayer7 {
@@ -69,6 +78,26 @@ public class SeatCpu extends ComputerPlayer7 {
                 int hand, int permanents, int untapped, int life, int playable) {
     }
 
+    /** Identical acts at one board in a step before the next is a pass. */
+    static final int LOOP_BREAK = 3;
+
+    /** The acts of the current turn and step, by what was done at which board. */
+    static final class LoopGuard implements Serializable {
+        private int turn = -1;
+        private PhaseStep step;
+        private final Map<String, Integer> seen = new HashMap<>();
+
+        /** True when {@code key} has been acted on LOOP_BREAK times already this turn and step. */
+        boolean repeated(int turnNum, PhaseStep stepNow, String key) {
+            if (turnNum != turn || stepNow != step) {
+                turn = turnNum;
+                step = stepNow;
+                seen.clear();
+            }
+            return seen.merge(key, 1, Integer::sum) > LOOP_BREAK;
+        }
+    }
+
     private transient Hooks hooks;
     // While a think runs: when it started (epoch ms), else 0 — `busy` reads it.
     private transient volatile long thinkingSince;
@@ -80,6 +109,8 @@ public class SeatCpu extends ComputerPlayer7 {
     private transient boolean acted;
     // The seat's cap, before the window ceiling lowers it for one think.
     private int capSecs;
+    // A copy or a restored snapshot starts a fresh one (null until first used).
+    private LoopGuard loopGuard;
 
     public SeatCpu(String name, RangeOfInfluence range, int skill) {
         super(name, range, skill);
@@ -177,7 +208,46 @@ public class SeatCpu extends ComputerPlayer7 {
     protected void act(Game game) {
         // The simulation's best line can be a PassAbility: that is a pass, not an action.
         acted = actions != null && actions.stream().anyMatch(a -> !(a instanceof PassAbility));
+        if (acted) {
+            if (loopGuard == null) {
+                loopGuard = new LoopGuard();
+            }
+            String key = actKey(game);
+            if (loopGuard.repeated(game.getTurnNum(), game.getTurnStepType(), key)) {
+                // The same thing at the same board, again: pass instead, and say so.
+                if (hooks != null) {
+                    hooks.record(loopRecord(game));
+                }
+                actions.clear();
+                acted = false;
+            }
+        }
         super.act(game);
+    }
+
+    /** What this act does, with its targets, at which board. */
+    private String actKey(Game game) {
+        StringBuilder sb = new StringBuilder();
+        for (Ability a : actions) {
+            sb.append(a.toString());
+            for (Target t : a.getTargets()) {
+                sb.append(t.getTargets());
+            }
+            sb.append(';');
+        }
+        return sb.append('@').append(game.getState().getValue(true, game).hashCode()).toString();
+    }
+
+    private Map<String, Object> loopRecord(Game game) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("kind", "cpu_loop_break");
+        r.put("seat", getName());
+        r.put("turn", game.getTurnNum());
+        r.put("step", game.getTurnStepType() == null ? null : game.getTurnStepType().name());
+        r.put("action", actions.isEmpty() ? null : actions.getFirst().toString());
+        r.put("repeats", LOOP_BREAK);
+        r.put("at", System.currentTimeMillis());
+        return r;
     }
 
     /**
