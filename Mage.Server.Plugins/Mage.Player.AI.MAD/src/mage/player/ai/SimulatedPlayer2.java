@@ -117,9 +117,17 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
                 continue;
             }
             List<Ability> options = game.getPlayer(playerId).getPlayableOptions(ability, game);
+            boolean hadOptions = !options.isEmpty();
             options = optimizeOptions(game, options, ability);
             if (options.isEmpty()) {
-                allActions.add(ability);
+                // An ability with nothing to choose is itself the option. One whose
+                // every target the optimizer took away is not: a helpful Aura with
+                // only an opponent's permanent to enchant used to be added bare, and
+                // chooseTarget's required-target fallback then put it on the
+                // opponent's permanent (Utopia Sprawl on the player's Forest).
+                if (!hadOptions) {
+                    allActions.add(ability);
+                }
             } else {
                 for (Ability option : options) {
                     allActions.add(option);
