@@ -60,8 +60,13 @@ public class AutoPayGameTest {
      * offered sources go to {@code prompts}.
      */
     private Outcome play(String spell, List<String> picks, String... battlefield) throws Exception {
+        return play(true, spell, picks, battlefield);
+    }
+
+    /** {@code person}: a person's seat (mana sources offered, an ambiguous payment asked); off, a pilot's. */
+    private Outcome play(boolean person, String spell, List<String> picks, String... battlefield) throws Exception {
         GameHost host = new GameHost(new GameHost.Config("autopay", "duel", 5L, null,
-                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), true));
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), person));
         Game game = host.game();
         Player you = null;
         for (Player p : game.getPlayers().values()) {
@@ -245,6 +250,94 @@ public class AutoPayGameTest {
     public void conditionalManaIsNotTheEnginesToSpend() throws Exception {
         // Ancient Ziggurat's mana is for creature spells only: not a clean source, so the Forest is the one plan.
         paid(play("Llanowar Elves", "Ancient Ziggurat", "Forest"), "Forest");
+    }
+
+    /**
+     * A pilot taps a basic into a Signet (fullpod issue #31): Kaalia of the
+     * Vast off a Boros Signet, a Plains and two Swamps, which no tap-only
+     * plan can pay (only the Signet makes red). The pilot's driver cancels
+     * every mana prompt, so before this the cast was always cancelled.
+     */
+    @Test(timeout = 240_000)
+    public void aPilotTapsABasicIntoASignetForItsFourDrop() throws Exception {
+        Outcome o = play(false, "Kaalia of the Vast", List.of(), "Boros Signet", "Plains", "Swamp", "Swamp");
+        paid(o, "Boros Signet", "Plains", "Swamp");
+        Assert.assertTrue("everything tapped: " + o, o.untapped().isEmpty());
+    }
+
+    /**
+     * {W} from a Signet and a Swamp: the Swamp goes into the Signet, {W}
+     * pays, {R} floats. A pilot passing then is never asked whether to lose
+     * it (a "no" puts it back at the same priority, to be asked again: the
+     * golden recorder looped there).
+     */
+    @Test(timeout = 240_000)
+    public void aPilotPassesWithASignetsSpareManaUnasked() throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("autopay-float", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), false));
+        Game game = host.game();
+        Player you = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("You".equals(p.getName())) {
+                you = p;
+            }
+        }
+        Assert.assertNotNull(you);
+        List<Card> library = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            library.add(card("Colossal Dreadmaw"));
+        }
+        game.cheat(you.getId(), library, List.of(card("Savannah Lions")),
+                List.of(new PutToBattlefieldInfo(card("Boros Signet"), false), new PutToBattlefieldInfo(card("Swamp"), false)),
+                List.of(), List.of(), List.of());
+        host.start();
+        try {
+            boolean cast = false;
+            int passesAfter = 0;
+            for (int i = 0; i < 60 && passesAfter < 3; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                Assert.assertFalse("game over too soon: " + d, Boolean.TRUE.equals(d.get("game_over")));
+                String type = String.valueOf(d.get("action_type"));
+                String message = String.valueOf(d.get("message"));
+                Assert.assertFalse("asked about the floating mana: " + d, message.contains("mana pool"));
+                Assert.assertNotEquals("no mana prompt: " + d, "GAME_PLAY_MANA", type);
+                Map<String, Object> args;
+                if ("GAME_TARGET".equals(type) && message.contains("starting player")) {
+                    args = Map.of("choice", indexOfYou(d));
+                } else if (!cast && "GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null && castIndex(d, "Savannah Lions") != null) {
+                    cast = true;
+                    args = Map.of("choice", castIndex(d, "Savannah Lions"));
+                } else {
+                    if (cast) {
+                        passesAfter++;
+                    }
+                    args = Map.of("choice", "no");
+                }
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+            Assert.assertTrue("cast", cast);
+            Assert.assertNotNull("the Lions resolved", game.getBattlefield().getAllActivePermanents(you.getId()).stream()
+                    .filter(p -> "Savannah Lions".equals(p.getName())).findFirst().orElse(null));
+        } finally {
+            host.end();
+        }
+    }
+
+    /** A pilot keeps a land up rather than a Signet nothing could pay for. */
+    @Test(timeout = 240_000)
+    public void aPilotKeepsALandUpRatherThanAnUnpayableSignet() throws Exception {
+        Outcome o = play(false, "Mind Stone", List.of(), "Boros Signet", "Plains", "Swamp");
+        Assert.assertTrue("cast: " + o, o.cast());
+        Assert.assertEquals("no mana prompt: " + o, 0, o.manaPrompts());
+        Assert.assertTrue("the Signet tapped: " + o, o.tapped().contains("Boros Signet"));
+        Assert.assertEquals("one land kept up: " + o, 1, o.untapped().size());
+    }
+
+    /** A person taps their own Signet: the engine never plans one for them. */
+    @Test(timeout = 240_000)
+    public void aPersonIsAskedRatherThanHavingASignetTappedForThem() throws Exception {
+        asked(play("Kaalia of the Vast", "Boros Signet", "Plains", "Swamp", "Swamp"));
     }
 
     @Test(timeout = 240_000)
