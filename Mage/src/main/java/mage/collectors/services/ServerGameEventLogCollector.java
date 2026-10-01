@@ -349,6 +349,15 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
                 if (ev.getChoice() != null) {
                     Choice c = ev.getChoice();
                     choices.put("options", new ArrayList<>(c.getChoices()));
+                    if (c.isKeyChoice()) {
+                        // A keyed choice (a replacement effect's order) has no
+                        // plain options; its items' texts, in the order offered.
+                        List<String> items = new ArrayList<>();
+                        for (String text : c.getKeyChoices().values()) {
+                            items.add(stripHtml(text));
+                        }
+                        choices.put("items", items);
+                    }
                 }
                 break;
             case PLAY_MANA:
@@ -461,6 +470,23 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
                 break;
             case "string":
                 response.put("value", data);
+                // A keyed choice's key can be new every run (a replacement
+                // effect's is its effect and ability ids): record the picked
+                // item's position and text too, which a replay maps it back
+                // by (ReplayFeederCollector). "#" is HumanPlayer's "remember".
+                if (data instanceof String && pending.event != null && pending.event.getChoice() != null
+                        && pending.event.getChoice().isKeyChoice()) {
+                    String key = ((String) data).startsWith("#") ? ((String) data).substring(1) : (String) data;
+                    int idx = 0;
+                    for (Map.Entry<String, String> entry : pending.event.getChoice().getKeyChoices().entrySet()) {
+                        if (entry.getKey().equals(key)) {
+                            response.put("choice_index", idx);
+                            response.put("name", stripHtml(entry.getValue()));
+                            break;
+                        }
+                        idx++;
+                    }
+                }
                 break;
             case "integer":
                 response.put("value", data);
