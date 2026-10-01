@@ -27,6 +27,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -603,7 +604,8 @@ public final class DecisionRenderer {
                 targets = ids;
             }
         }
-        List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired());
+        targets = withChosen(targets, e);
+        List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired(), chosenIds(e));
         chosenSoFar(r, e);
         source(r, e, game);
         return backing;
@@ -681,6 +683,41 @@ public final class DecisionRenderer {
         }
     }
 
+    /**
+     * The targets on offer plus the ones already picked. Every one of
+     * HumanPlayer's several-targets loops removes a pick that is picked
+     * again, but a permanent's or player's {@code possibleTargets} leaves the
+     * picked out (a divided effect wants different targets, rule 601.2d), so
+     * the seat had nothing to answer with and a pick could not be taken back
+     * (fullpod issue #34). A card search already re-offers its picks; now
+     * every prompt does, each flagged {@code chosen} and listed last.
+     */
+    private static Set<UUID> withChosen(Set<UUID> targets, PlayerQueryEvent e) {
+        Set<UUID> chosen = chosenIds(e);
+        if (chosen.isEmpty() || targets == null || targets.containsAll(chosen)) {
+            return targets;
+        }
+        Set<UUID> out = new LinkedHashSet<>(targets);
+        out.addAll(chosen);
+        return out;
+    }
+
+    /** The engine's chosenTargets: what earlier rounds of this prompt picked. */
+    private static Set<UUID> chosenIds(PlayerQueryEvent e) {
+        Map<String, Serializable> options = e.getOptions();
+        Object raw = options != null ? options.get("chosenTargets") : null;
+        if (!(raw instanceof Set<?> ids) || ids.isEmpty()) {
+            return Set.of();
+        }
+        Set<UUID> out = new HashSet<>();
+        for (Object id : ids) {
+            if (id instanceof UUID uuid) {
+                out.add(uuid);
+            }
+        }
+        return out;
+    }
+
     /** The legal subset of a card search's zone, when HumanPlayer computed one
      *  (options["possibleTargets"], set only when non-empty). */
     @SuppressWarnings("unchecked")
@@ -702,13 +739,19 @@ public final class DecisionRenderer {
                 targets.add(a.getId());
             }
         }
-        return targetChoices(r, targets, offered, view, me, true);
+        return targetChoices(r, targets, offered, view, me, true, Set.of());
     }
 
     private record TargetChoice(UUID id, Map<String, Object> entry) {
     }
 
-    private List<Object> targetChoices(Map<String, Object> r, Set<UUID> targets, CardsView offered, GameView view, UUID me, boolean required) {
+    /**
+     * {@code picked}: targets already chosen on an earlier round, listed
+     * after every other choice — picking one again takes it back, so the
+     * first choice (what a default or a scripted answer takes) is always a
+     * new target while there is one.
+     */
+    private List<Object> targetChoices(Map<String, Object> r, Set<UUID> targets, CardsView offered, GameView view, UUID me, boolean required, Set<UUID> picked) {
         r.put("response_type", "index");
         r.put("required", required);
         r.put("can_cancel", !required);
@@ -721,6 +764,10 @@ public final class DecisionRenderer {
             }
         }
         entries.sort((a, b) -> {
+            int pickedCmp = Boolean.compare(picked.contains(a.id()), picked.contains(b.id()));
+            if (pickedCmp != 0) {
+                return pickedCmp;
+            }
             int youCmp = Boolean.compare(Boolean.TRUE.equals(b.entry().get("is_you")), Boolean.TRUE.equals(a.entry().get("is_you")));
             if (youCmp != 0) {
                 return youCmp;
