@@ -197,14 +197,20 @@ public class SpecialManaActionTest {
                     args = land != null ? Map.of("choice", String.valueOf(land.get("index"))) : Map.of("choice", "special");
                 } else if ("GAME_TARGET".equals(type) && cast) {
                     // The delve cost's pick: every graveyard card, one round each, then Done.
+                    // Each pick is offered again, flagged and listed last (picking it
+                    // again takes it back), so the round after the seventh offers only
+                    // the seven picks.
                     List<Map<String, Object>> choices = ScriptedSeat.choices(d);
-                    if (choices.isEmpty()) {
+                    Map<String, Object> fresh = choices.stream().filter(c -> !Boolean.TRUE.equals(c.get("chosen"))).findFirst().orElse(null);
+                    if (fresh == null) {
                         Assert.assertEquals("seven chosen: " + d, 7, ((List<?>) d.get("chosen")).size());
+                        Assert.assertEquals("the seven offered again: " + d, 7, choices.size());
                         Assert.assertEquals("Done", d.get("done_text"));
                         args = Map.of("choice", "no");
                     } else {
+                        Assert.assertSame("a new pick comes first", fresh, choices.get(0));
                         picks++;
-                        args = Map.of("choice", String.valueOf(choices.get(0).get("id")));
+                        args = Map.of("choice", String.valueOf(fresh.get("id")));
                     }
                 } else if ("GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null && castIndex(d, "Treasure Cruise") != null) {
                     cast = true;

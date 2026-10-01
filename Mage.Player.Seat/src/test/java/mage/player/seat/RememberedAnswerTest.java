@@ -325,7 +325,7 @@ public class RememberedAnswerTest {
 
     private static String discardIndex(Map<String, Object> d) {
         for (Map<String, Object> c : ScriptedSeat.choices(d)) {
-            if (!"Grizzly Bears".equals(c.get("name"))) {
+            if (!"Grizzly Bears".equals(c.get("name")) && !Boolean.TRUE.equals(c.get("chosen"))) {
                 return String.valueOf(c.get("index"));
             }
         }
