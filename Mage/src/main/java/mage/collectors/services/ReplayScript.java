@@ -29,10 +29,19 @@ import java.util.regex.Pattern;
  */
 public final class ReplayScript {
 
-    /** One recorded decision. */
+    /** One recorded decision. {@code choiceIndex} and {@code name} on a
+     *  string answer to a keyed choice are the picked item's position and
+     *  text: a key can be new every run (a replacement effect's is its
+     *  effect and ability ids), so the feeder maps it back by those. */
     public record Decision(int seq, String player, String queryType, String responseType,
                            String id, String name, JsonElement value, String color, Integer abilityIndex,
-                           Integer modeIndex, String remember) {
+                           Integer modeIndex, String remember, Integer choiceIndex) {
+    }
+
+    /** A keyed choice's item text as the recorder writes it and the feeder
+     *  compares it: HTML stripped and engine refs ({@code [a7c]}) dropped. */
+    public static String normalizeChoice(String text) {
+        return normalizeLog(text);
     }
 
     private static final Pattern LOG_REF = Pattern.compile("\\s*\\[[0-9a-f]{3}\\]");
@@ -94,7 +103,8 @@ public final class ReplayScript {
                     str(r, "color"),
                     r.has("ability_index") && r.get("ability_index").isJsonPrimitive() ? r.get("ability_index").getAsInt() : null,
                     r.has("mode_index") && r.get("mode_index").isJsonPrimitive() ? r.get("mode_index").getAsInt() : null,
-                    str(r, "remember")));
+                    str(r, "remember"),
+                    r.has("choice_index") && r.get("choice_index").isJsonPrimitive() ? r.get("choice_index").getAsInt() : null));
             } else if ("game_action".equals(type)) {
                 logs.add(normalizeLog(str(e, "message")));
             } else if ("game_start".equals(type) && e.has("players") && e.get("players").isJsonArray()) {
