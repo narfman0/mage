@@ -62,6 +62,51 @@ public final class Views {
     }
 
     /**
+     * Every object in the game at its place in the game's own ordered
+     * collections: players in turn order, the battlefield in the order things
+     * entered, the stack, then each player's hand, graveyard and library, the
+     * exile zones and the command zone. A list the engine hands over as a hash
+     * set (a prompt's targets, the playable objects) is sorted by name and
+     * short id; two objects of one name that have no short id yet (two
+     * tokens, two triggers) fall back to this, so they are listed, and named,
+     * in the same order every run of the same game (fullpod issue #33) —
+     * where hash order handed them out by their random UUIDs. Unknown ids
+     * rank last.
+     */
+    public java.util.function.ToIntFunction<UUID> gameOrder(Game game) {
+        Map<UUID, Integer> order = new HashMap<>();
+        java.util.function.Consumer<UUID> add = id -> {
+            if (id != null) {
+                order.putIfAbsent(id, order.size());
+            }
+        };
+        List<UUID> players = new ArrayList<>(game.getState().getPlayerList());
+        players.forEach(add);
+        for (mage.game.permanent.Permanent p : game.getBattlefield().getAllPermanents()) {
+            add.accept(p.getId());
+        }
+        for (mage.game.stack.StackObject so : game.getStack()) {
+            add.accept(so.getId());
+        }
+        for (UUID playerId : players) {
+            Player player = game.getPlayer(playerId);
+            if (player == null) {
+                continue;
+            }
+            player.getHand().forEach(add);
+            player.getGraveyard().forEach(add);
+            player.getLibrary().getCardList().forEach(add);
+        }
+        for (Card card : game.getExile().getAllCards(game)) {
+            add.accept(card.getId());
+        }
+        for (mage.game.command.CommandObject co : game.getState().getCommand()) {
+            add.accept(co.getId());
+        }
+        return id -> order.getOrDefault(id, Integer.MAX_VALUE);
+    }
+
+    /**
      * The object behind a log ref — the {@code [a3f]} the engine appends to a
      * name in prompts and log lines, the first three hex digits of its UUID
      * (GameLog.getColoredObjectIdName). Found among the objects this game has

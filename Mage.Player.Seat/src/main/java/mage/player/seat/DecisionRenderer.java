@@ -218,11 +218,15 @@ public final class DecisionRenderer {
         List<Object> backing = new ArrayList<>();
         PlayableObjectsList playable = view.getCanPlayObjects();
         if (playable != null && !playable.isEmpty()) {
+            // A hash map: two of one name with no short id yet (two tokens)
+            // fall back to the game's order (Views.gameOrder, issue #33).
             List<Map.Entry<UUID, PlayableObjectStats>> sorted = new ArrayList<>(playable.getObjects().entrySet());
+            java.util.function.ToIntFunction<UUID> gameOrder = views.gameOrder(game);
             sorted.sort(Comparator.<Map.Entry<UUID, PlayableObjectStats>, String>comparing(entry -> {
                 CardView cv = views.findCardView(entry.getKey(), view);
                 return cv != null ? views.displayName(cv) : "";
-            }).thenComparingInt(entry -> views.sequence(entry.getKey())));
+            }).thenComparingInt(entry -> views.sequence(entry.getKey()))
+                    .thenComparingInt(entry -> gameOrder.applyAsInt(entry.getKey())));
             for (Map.Entry<UUID, PlayableObjectStats> entry : sorted) {
                 UUID objectId = entry.getKey();
                 // A face of a double-faced or split card is its own object to the
@@ -605,7 +609,21 @@ public final class DecisionRenderer {
             }
         }
         targets = withChosen(targets, e);
-        List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired(), chosenIds(e));
+        // The engine's targets are a hash set: the order an offered list
+        // (a searched zone, a list of permanents) gives, then the game's.
+        List<UUID> listed = new ArrayList<>();
+        if (e.getCards() != null) {
+            listed.addAll(e.getCards());
+        } else if (e.getPerms() != null) {
+            for (Permanent p : e.getPerms()) {
+                listed.add(p.getId());
+            }
+        }
+        java.util.function.ToIntFunction<UUID> gameOrder = views.gameOrder(game);
+        List<Object> backing = targetChoices(r, targets, offered, view, me, e.isRequired(), chosenIds(e), id -> {
+            int at = listed.indexOf(id);
+            return at >= 0 ? at : listed.size() + Math.min(gameOrder.applyAsInt(id), Integer.MAX_VALUE - listed.size());
+        });
         chosenSoFar(r, e);
         source(r, e, game);
         return backing;
@@ -663,18 +681,25 @@ public final class DecisionRenderer {
         }
         Object raw = options.get("chosenTargets");
         if (raw instanceof Set<?> ids && !ids.isEmpty()) {
-            List<String> chosen = new ArrayList<>();
+            Set<String> picked = new HashSet<>();
             for (Object id : ids) {
                 if (id instanceof UUID uuid) {
-                    chosen.add(views.shortId(uuid));
+                    picked.add(views.shortId(uuid));
                 }
             }
+            // In the choices' order, not the engine's hash set's (issue #33).
+            List<String> chosen = new ArrayList<>();
             for (Object c : (List<Object>) r.get("choices")) {
                 Map<String, Object> choice = (Map<String, Object>) c;
-                if (chosen.contains(String.valueOf(choice.get("id")))) {
+                String id = String.valueOf(choice.get("id"));
+                if (picked.remove(id)) {
                     choice.put("chosen", true);
+                    chosen.add(id);
                 }
             }
+            List<String> rest = new ArrayList<>(picked);
+            rest.sort(Comparator.comparingInt(mage.util.ShortIdRegistry::parseSequence));
+            chosen.addAll(rest);
             r.put("chosen", chosen);
         }
         Object done = options.get("UI.right.btn.text");
@@ -733,13 +758,23 @@ public final class DecisionRenderer {
         r.put("action_type", "GAME_TARGET");
         List<? extends Ability> abilities = e.getAbilities();
         CardsView offered = abilities != null ? new CardsView(abilities, game) : null;
-        Set<UUID> targets = new HashSet<>();
+        // Two triggers of one name (two Soul Wardens seeing one creature
+        // enter) are told apart, and handed their short ids, by their
+        // source's short id, then by the order the engine lists them (the
+        // order they triggered) — not by a hash set of their random UUIDs,
+        // which swapped them between two runs of the same game and made an
+        // index answer unreplayable (fullpod issue #33).
+        Set<UUID> targets = new LinkedHashSet<>();
+        Map<UUID, Integer> rank = new HashMap<>();
         if (abilities != null) {
-            for (Ability a : abilities) {
+            List<Ability> ordered = new ArrayList<>(abilities);
+            ordered.sort(Comparator.comparingInt(a -> views.sequence(a.getSourceId())));
+            for (Ability a : ordered) {
+                rank.putIfAbsent(a.getId(), rank.size());
                 targets.add(a.getId());
             }
         }
-        return targetChoices(r, targets, offered, view, me, true, Set.of());
+        return targetChoices(r, targets, offered, view, me, true, Set.of(), id -> rank.getOrDefault(id, Integer.MAX_VALUE));
     }
 
     private record TargetChoice(UUID id, Map<String, Object> entry) {
@@ -749,9 +784,14 @@ public final class DecisionRenderer {
      * {@code picked}: targets already chosen on an earlier round, listed
      * after every other choice — picking one again takes it back, so the
      * first choice (what a default or a scripted answer takes) is always a
-     * new target while there is one.
+     * new target while there is one. The rest are sorted by name, then
+     * short id; {@code order} breaks a tie between two of one name that have
+     * no short id yet, so the list (each choice's {@code index}) and the
+     * short ids handed out here come out the same every run of the same game
+     * (fullpod issue #33).
      */
-    private List<Object> targetChoices(Map<String, Object> r, Set<UUID> targets, CardsView offered, GameView view, UUID me, boolean required, Set<UUID> picked) {
+    private List<Object> targetChoices(Map<String, Object> r, Set<UUID> targets, CardsView offered, GameView view, UUID me, boolean required, Set<UUID> picked,
+                                       java.util.function.ToIntFunction<UUID> order) {
         r.put("response_type", "index");
         r.put("required", required);
         r.put("can_cancel", !required);
@@ -774,7 +814,11 @@ public final class DecisionRenderer {
             }
             int nameCmp = String.CASE_INSENSITIVE_ORDER.compare(
                     String.valueOf(a.entry().get("name")), String.valueOf(b.entry().get("name")));
-            return nameCmp != 0 ? nameCmp : Integer.compare(views.sequence(a.id()), views.sequence(b.id()));
+            if (nameCmp != 0) {
+                return nameCmp;
+            }
+            int seqCmp = Integer.compare(views.sequence(a.id()), views.sequence(b.id()));
+            return seqCmp != 0 ? seqCmp : Integer.compare(order.applyAsInt(a.id()), order.applyAsInt(b.id()));
         });
         List<Map<String, Object>> choices = new ArrayList<>();
         List<Object> backing = new ArrayList<>();

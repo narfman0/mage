@@ -315,7 +315,13 @@ public class ServerGameEventLogCollector extends EmptyDataCollector {
             case PICK_TARGET:
                 if (ev.getTargets() != null) {
                     List<Map<String, Object>> targets = new ArrayList<>();
-                    for (UUID targetId : ev.getTargets()) {
+                    // The engine's targets are a hash set of random UUIDs; in
+                    // short-id order the list reads the same every run of the
+                    // same game (fullpod issue #33). A seat has named them all
+                    // by now, rendering the question.
+                    List<UUID> ordered = new ArrayList<>(ev.getTargets());
+                    ordered.sort(Comparator.comparingInt(registry::getSequence));
+                    for (UUID targetId : ordered) {
                         Map<String, Object> t = new LinkedHashMap<>();
                         t.put("id", registry.getOrAssign(targetId));
                         MageObject obj = game.getObject(targetId);
