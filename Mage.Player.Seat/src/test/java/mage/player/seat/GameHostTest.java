@@ -148,6 +148,65 @@ public class GameHostTest {
     }
 
     /**
+     * A concede at the very first question — the host choosing who starts,
+     * before any player has priority — is a loss like any other (fullpod
+     * issue #32: it ended the game as a draw), and the question it was asked
+     * is gone from the seat: the next poll hands out no stale decision.
+     */
+    @Test(timeout = 120_000)
+    public void aConcedeBeforeTheStartingPlayerIsChosenIsALoss() throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("concede-early", "duel", 3L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)), false));
+        try {
+            host.start();
+            Map<String, Object> d = host.awaitDecision("You", 120_000);
+            Assert.assertEquals("GAME_TARGET", d.get("action_type")); // "Select a starting player"
+            host.concede("You");
+            Map<String, Object> over = host.awaitDecision("You", 10_000);
+            Assert.assertNotEquals("the starting-player question is not handed out again: " + over,
+                    Boolean.TRUE, over.get("action_pending"));
+            for (int i = 0; i < 50 && !host.isOver(); i++) {
+                Thread.sleep(100);
+            }
+            over = host.state("You");
+            Assert.assertEquals(over.toString(), Boolean.TRUE, over.get("game_over"));
+            Assert.assertEquals(over.toString(), "CPU", over.get("winner"));
+            Assert.assertNull(over.get("draw"));
+            Assert.assertEquals(Boolean.TRUE, over.get("conceded"));
+            Assert.assertNull(over.get("engine_died"));
+        } finally {
+            host.end();
+        }
+    }
+
+    /**
+     * Without a chooser (a roll-off or a random seat) nobody has priority at
+     * the mulligans either, and the engine ends the game on the conceding
+     * thread, before the game thread has named its winner: no result in the
+     * gap may read as a draw.
+     */
+    @Test(timeout = 120_000)
+    public void aConcedeAtTheMulliganWithNoChooserIsALossFromTheFirstPoll() throws Exception {
+        for (String starting : List.of("roll", "random")) {
+            GameHost host = new GameHost(new GameHost.Config("concede-" + starting, "duel", 3L, null,
+                    List.of(new GameHost.SeatSpec("You", "seat", BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", BEARS, 6)),
+                    false, null, 0, 0, starting));
+            try {
+                host.start();
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                Assert.assertEquals(starting, "GAME_ASK", d.get("action_type")); // mulligan
+                host.concede("You");
+                Map<String, Object> over = host.awaitDecision("You", 10_000);
+                Assert.assertNull(starting + ": " + over, over.get("draw"));
+                Assert.assertEquals(starting + ": " + over, Boolean.TRUE, over.get("game_over"));
+                Assert.assertEquals(starting + ": " + over, "CPU", over.get("winner"));
+            } finally {
+                host.end();
+            }
+        }
+    }
+
+    /**
      * The host addresses a seat by its name, so two seats with one name are
      * refused when the game is made (fullpod issue #24) — two seats, or a seat
      * and the CPU — instead of the second overwriting the first and the first
