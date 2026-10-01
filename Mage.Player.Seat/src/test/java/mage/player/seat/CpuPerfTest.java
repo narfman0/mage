@@ -339,7 +339,7 @@ public class CpuPerfTest {
             Assert.assertNull(host.snapshotNow().get("error"));
             Path file = logDir.resolve(Snapshot.FILE);
             byte[] before = Files.readAllBytes(file);
-            Assert.assertThrows(Snapshot.Aborted.class, () -> Snapshot.write(host.game(), file, () -> true));
+            Assert.assertThrows(Snapshot.Aborted.class, () -> Snapshot.write(host.game(), host.seatKeys(), file, () -> true));
             Assert.assertArrayEquals("the previous snapshot stays", before, Files.readAllBytes(file));
             Assert.assertFalse("no temp file left", Files.exists(logDir.resolve(Snapshot.FILE + ".tmp")));
         } finally {
