@@ -279,6 +279,67 @@ public class SnapshotResumeTest {
         }
     }
 
+    /**
+     * fullpod #50: a park reads the status, then ends the game, and a write
+     * finishing in between put another board on disk than the one the park
+     * described (seq 181 at turn 10 described, turn 11 resumed). The park's
+     * read ({@link GameHost#snapshotFinal}) waits out a write in flight and
+     * stops every one after it: its seq and turn are the file's, and stay so.
+     */
+    @Test(timeout = 300_000)
+    public void aParksStatusNamesTheFileThatStays() throws Exception {
+        Path logDir = Files.createTempDirectory("snap-final");
+        Path file = logDir.resolve(Snapshot.FILE);
+        GameHost host = new GameHost(config("final", logDir, "cpu", null));
+        host.setSnapshotIntervalMs(0);
+        ScriptedSeat script = new ScriptedSeat();
+        List<Map<String, Object>> perf = new ArrayList<>();
+        host.start();
+        try {
+            Map<String, Object> d = playTo(host, script, "You", 3);
+            Map<String, Object> first = awaitSnapshot(host, host.game().getGameSeq());
+            Assert.assertNull("snapshot error: " + first, first.get("error"));
+            Assert.assertEquals("the status says the turn it was written at", 3, first.get("turn"));
+
+            // Every write from here stalls 2 s before its first buffer: long
+            // enough to park in the middle of one.
+            Set<Integer> started = ConcurrentHashMap.newKeySet();
+            Map<Integer, Long> since = new ConcurrentHashMap<>();
+            host.writeProbe = seq -> {
+                started.add(seq);
+                while (System.currentTimeMillis() - since.computeIfAbsent(seq, k -> System.currentTimeMillis()) < 2_000) {
+                    try {
+                        Thread.sleep(5);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            };
+            host.setSnapshotDebounceMs(0);
+            Assert.assertTrue(Boolean.TRUE.equals(host.chooseAction("You", script.answer(d)).get("success")));
+            toAWrite(host, script, started, perf);
+            int inFlight = host.game().getGameSeq();
+            Assert.assertEquals("mid-write, the plain status still names the last file", first.get("seq"), host.snapshotStatus().get("seq"));
+
+            Map<String, Object> parked = host.snapshotFinal();
+            Assert.assertEquals("the park's status waited for the write in flight", inFlight, parked.get("seq"));
+            Snapshot.Board board = Snapshot.read(file);
+            Assert.assertEquals("its seq is the file's", parked.get("seq"), board.game().getGameSeq());
+            Assert.assertEquals("its turn is the file's", parked.get("turn"), board.game().getTurnNum());
+
+            // Nothing is written after it, though questions stay open past the debounce.
+            host.writeProbe = null;
+            byte[] kept = Files.readAllBytes(file);
+            answerSlowly(host, script, 3, perf);
+            Thread.sleep(500);
+            Assert.assertEquals("no write after the park's read", parked.get("seq"), host.snapshotStatus().get("seq"));
+            Assert.assertArrayEquals("the file it named stays", kept, Files.readAllBytes(file));
+        } finally {
+            host.end();
+        }
+    }
+
     /** Answers {@code n} questions, each after it has been open 150 ms (a write here takes a few). */
     private static void answerSlowly(GameHost host, ScriptedSeat script, int n, List<Map<String, Object>> perf) throws Exception {
         for (int i = 0; i < n; i++) {
