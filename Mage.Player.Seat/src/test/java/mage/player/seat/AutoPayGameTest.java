@@ -608,6 +608,21 @@ public class AutoPayGameTest {
         Assert.assertTrue("the other floating colour is offered too, for the generic {1}: " + p, p.offered().contains("Black"));
     }
 
+    /**
+     * Restricted mana that can't pay this spell gets no pool button: a click
+     * on it paid nothing and the same prompt came back, forever (#52: Mox
+     * Jasper's red for Nogi, a non-Dragon). Mishra's Workshop's {C}{C}{C}
+     * is for artifact spells only, and Grizzly Bears is not one.
+     */
+    @Test(timeout = 240_000)
+    public void poolManaOffersNoRestrictedManaThatCantPayThisSpell() throws Exception {
+        // Swamp or Mountain for the {1}: an ambiguous payment, so the person is asked.
+        Prompt p = floatThenCast("Grizzly Bears", List.of("Mishra's Workshop"), "Mishra's Workshop", "Forest", "Swamp", "Mountain");
+        Assert.assertTrue("owed {1}{G}: " + p, p.message().startsWith("Pay {1}{G}"));
+        Assert.assertFalse("the Workshop's colourless can't pay a creature: " + p, p.offered().contains("Colorless"));
+        Assert.assertTrue("the lands still can: " + p, p.offered().contains("Forest"));
+    }
+
     /** A twobrid pip ({2/W}) takes any colour too, and its W matches the colour scan: floating red must still get a button. */
     @Test(timeout = 240_000)
     public void poolManaOffersAFloatingColourForATwobridPip() throws Exception {

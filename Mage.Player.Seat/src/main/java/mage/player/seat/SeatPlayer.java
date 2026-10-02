@@ -25,6 +25,7 @@ import mage.cards.CardImpl;
 import mage.constants.AbilityType;
 import mage.abilities.costs.mana.ActivationManaAbilityStep;
 import mage.constants.ColoredManaSymbol;
+import mage.constants.ManaType;
 import mage.constants.PlayerAction;
 import mage.game.stack.Spell;
 import mage.constants.RangeOfInfluence;
@@ -33,12 +34,14 @@ import mage.game.Game;
 import mage.game.permanent.Permanent;
 import mage.player.human.HumanPlayer;
 import mage.player.human.PlayerResponse;
+import mage.players.ManaPoolItem;
 import mage.players.PlayerImpl;
 import mage.players.net.UserData;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -61,6 +64,11 @@ import java.util.UUID;
 public class SeatPlayer extends HumanPlayer {
 
     private static final Logger LOG = Logger.getLogger(SeatPlayer.class);
+    // The serial form's id as Java computed it before spendablePool (#52),
+    // pinned so a board saved by an earlier pin still reads: Java computes it
+    // from the class's non-private members, so every public method added
+    // here would otherwise strand every parked game's saved board.
+    private static final long serialVersionUID = 334591984694651304L;
 
     /** Pay costs from the clean sources; off, every payment is the engine's own prompt. */
     private boolean autoPay = true;
@@ -100,6 +108,15 @@ public class SeatPlayer extends HumanPlayer {
      */
     private transient Deque<Planned> costTaps = new ArrayDeque<>();
     private transient UUID costTapsFor;
+
+    /**
+     * The payment the engine is asking about right now (playManaHandling's
+     * ability and what is left of its cost), so the prompt's pool buttons
+     * offer only mana that can pay it ({@link #spendablePool}). Game thread
+     * only; set on every ask, so a stale one is never read.
+     */
+    private transient Ability payingAbility;
+    private transient ManaCost payingCost;
 
     /** A tap the plan has resolved to the engine's objects. */
     private record Planned(ActivatedManaAbilityImpl ability, Permanent permanent, AutoPay.Kind make) {
@@ -291,6 +308,8 @@ public class SeatPlayer extends HumanPlayer {
 
     @Override
     protected boolean playManaHandling(Ability abilityToCast, ManaCost unpaid, String promptText, Game game) {
+        payingAbility = abilityToCast;
+        payingCost = unpaid;
         // Convoke, delve, improvise, assist: an alternate way to pay that the
         // engine registers for this payment round and offers through the
         // prompt's "special" answer. For a person that makes the payment
@@ -317,7 +336,7 @@ public class SeatPlayer extends HumanPlayer {
             if (LOG.isDebugEnabled()) {
                 LOG.debug("autopay unpaid=" + unpaid.getText() + " sources=" + sources.size() + " plan=" + plan);
             }
-            if (plan.payable() && (!(plan.ambiguous() || specialPayment) || !askWhenAmbiguous) && !floatingPoolCanHelp(pips)) {
+            if (plan.payable() && (!(plan.ambiguous() || specialPayment) || !askWhenAmbiguous) && !floatingPoolCanHelp(pips, game)) {
                 AutoPay.Pick pick = plan.pick();
                 ActivatedManaAbilityImpl ability = abilities.get(pick.output().abilityId());
                 Permanent perm = permanents.get(pick.source().id());
@@ -424,23 +443,55 @@ public class SeatPlayer extends HumanPlayer {
      * asking again — the four other floating mana sat unused because
      * {@link #sources} only looks at permanents, never the pool.
      */
-    private boolean floatingPoolCanHelp(List<AutoPay.Pip> pips) {
+    private boolean floatingPoolCanHelp(List<AutoPay.Pip> pips, Game game) {
         if (pips == null || getManaPool().isEmpty()) {
             return false;
         }
-        Mana floating = getManaPool().getMana();
+        Map<ManaType, Integer> floating = spendablePool(game);
         for (AutoPay.Pip pip : pips) {
             EnumSet<AutoPay.Kind> accepts = pip.accepts();
-            if ((accepts.contains(AutoPay.Kind.W) && floating.getWhite() > 0)
-                    || (accepts.contains(AutoPay.Kind.U) && floating.getBlue() > 0)
-                    || (accepts.contains(AutoPay.Kind.B) && floating.getBlack() > 0)
-                    || (accepts.contains(AutoPay.Kind.R) && floating.getRed() > 0)
-                    || (accepts.contains(AutoPay.Kind.G) && floating.getGreen() > 0)
-                    || (accepts.contains(AutoPay.Kind.C) && floating.getColorless() > 0)) {
+            if ((accepts.contains(AutoPay.Kind.W) && floating.containsKey(ManaType.WHITE))
+                    || (accepts.contains(AutoPay.Kind.U) && floating.containsKey(ManaType.BLUE))
+                    || (accepts.contains(AutoPay.Kind.B) && floating.containsKey(ManaType.BLACK))
+                    || (accepts.contains(AutoPay.Kind.R) && floating.containsKey(ManaType.RED))
+                    || (accepts.contains(AutoPay.Kind.G) && floating.containsKey(ManaType.GREEN))
+                    || (accepts.contains(AutoPay.Kind.C) && floating.containsKey(ManaType.COLORLESS))) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * The floating mana the payment in progress can spend, by type (only
+     * types with some): plain mana, and restricted mana whose condition
+     * holds for the ability being paid. The pool's own totals count all of
+     * its restricted mana, and the prompt's pool button for mana that can't
+     * pay (Mox Jasper's red for a non-Dragon, Unclaimed Territory's green
+     * for an enchantment) paid nothing and asked again until the person
+     * gave up (#52). The same test keeps restricted mana that *can* pay
+     * from being invisible to {@link #floatingPoolCanHelp}.
+     */
+    public Map<ManaType, Integer> spendablePool(Game game) {
+        Map<ManaType, Integer> out = new EnumMap<>(ManaType.class);
+        for (ManaPoolItem item : getManaPool().getManaItems()) {
+            Mana mana;
+            if (!item.isConditional()) {
+                mana = item.getMana();
+            } else if (payingAbility == null
+                    || item.getConditionalMana().apply(payingAbility, game, item.getSourceId(), payingCost)) {
+                mana = item.getConditionalMana();
+            } else {
+                continue;
+            }
+            for (ManaType type : ManaType.values()) {
+                int n = type == ManaType.GENERIC ? 0 : mana.get(type);
+                if (n > 0) {
+                    out.merge(type, n, Integer::sum);
+                }
+            }
+        }
+        return out;
     }
 
     /**

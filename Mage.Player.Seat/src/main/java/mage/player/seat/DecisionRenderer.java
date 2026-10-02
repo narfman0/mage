@@ -17,7 +17,6 @@ import mage.view.CardsView;
 import mage.view.CombatGroupView;
 import mage.view.CommanderView;
 import mage.view.GameView;
-import mage.view.ManaPoolView;
 import mage.view.PermanentView;
 import mage.view.PlayerView;
 
@@ -872,13 +871,17 @@ public final class DecisionRenderer {
                 backing.add(id);
             }
         }
-        ManaPoolView pool = view.getMyPlayer() != null ? view.getMyPlayer().getManaPool() : null;
+        // What the pool can spend on this payment, not its totals: the view's
+        // pool counts restricted mana too, and a button for mana that can't
+        // pay this (Mox Jasper's red for a non-Dragon) paid nothing and asked
+        // again, forever (#52).
+        Map<ManaType, Integer> pool = player.spendablePool(game);
         for (ManaType type : poolChoices(pool, e.getMessage())) {
             Map<String, Object> c = new HashMap<>();
             c.put("index", choices.size());
             c.put("choice_type", "pool_mana");
             c.put("name", prettyManaType(type));
-            c.put("count", poolCount(pool, type));
+            c.put("count", pool.getOrDefault(type, 0));
             choices.add(c);
             backing.add(type);
         }
@@ -1119,17 +1122,14 @@ public final class DecisionRenderer {
         }
     }
 
-    private static List<ManaType> poolChoices(ManaPoolView pool, String prompt) {
+    static List<ManaType> poolChoices(Map<ManaType, Integer> pool, String prompt) {
         List<ManaType> out = new ArrayList<>();
-        if (pool == null) {
-            return out;
-        }
         boolean explicit = false;
         if (prompt != null) {
             for (int i = 0; i < SYMBOLS.length; i++) {
                 if (SYMBOLS[i].matcher(prompt).find()) {
                     explicit = true;
-                    if (poolCount(pool, SYMBOL_TYPES[i]) > 0 && !out.contains(SYMBOL_TYPES[i])) {
+                    if (pool.getOrDefault(SYMBOL_TYPES[i], 0) > 0 && !out.contains(SYMBOL_TYPES[i])) {
                         out.add(SYMBOL_TYPES[i]);
                     }
                 }
@@ -1145,26 +1145,11 @@ public final class DecisionRenderer {
             return out;
         }
         for (ManaType type : SYMBOL_TYPES) {
-            if (poolCount(pool, type) > 0 && !out.contains(type)) {
+            if (pool.getOrDefault(type, 0) > 0 && !out.contains(type)) {
                 out.add(type);
             }
         }
         return out;
-    }
-
-    static int poolCount(ManaPoolView pool, ManaType type) {
-        if (pool == null) {
-            return 0;
-        }
-        return switch (type) {
-            case WHITE -> pool.getWhite();
-            case BLUE -> pool.getBlue();
-            case BLACK -> pool.getBlack();
-            case RED -> pool.getRed();
-            case GREEN -> pool.getGreen();
-            case COLORLESS -> pool.getColorless();
-            case GENERIC -> 0;
-        };
     }
 
     private static String prettyManaType(ManaType type) {
