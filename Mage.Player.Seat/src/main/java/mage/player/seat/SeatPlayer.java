@@ -34,6 +34,7 @@ import mage.game.Game;
 import mage.game.permanent.Permanent;
 import mage.player.human.HumanPlayer;
 import mage.player.human.PlayerResponse;
+import mage.players.ManaPool;
 import mage.players.ManaPoolItem;
 import mage.players.PlayerImpl;
 import mage.players.net.UserData;
@@ -200,6 +201,24 @@ public class SeatPlayer extends HumanPlayer {
     public void setAskWhenAmbiguous(boolean ask) {
         this.askWhenAmbiguous = ask;
         getUserData().setConfirmEmptyManaPool(ask);
+    }
+
+    /**
+     * Asked only when passing would really lose mana: HumanPlayer asks
+     * whenever {@link ManaPool#canLostManaOnEmpty} says so, and that ignores
+     * a pool item's duration, which {@link ManaPool#emptyPool} honours —
+     * Savage Ventmaw's mana is kept until the end phase, and the person was
+     * asked "it will be lost" at every pass of their attack (fullpod #53).
+     * Emptying a copy of the pool is the engine's own answer, every
+     * duration and "doesn't empty" effect applied.
+     */
+    @Override
+    protected boolean passWithManaPoolCheck(Game game) {
+        if (getManaPool().count() > 0 && getManaPool().copy().emptyPool(game) == 0) {
+            pass(game);
+            return true;
+        }
+        return super.passWithManaPoolCheck(game);
     }
 
     /**

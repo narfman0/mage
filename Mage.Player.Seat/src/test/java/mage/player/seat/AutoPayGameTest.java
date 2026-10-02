@@ -648,4 +648,62 @@ public class AutoPayGameTest {
         Assert.assertTrue("Island stays untapped, paid from the float instead: " + o, o.untapped().contains("Island"));
         Assert.assertFalse("Island was not tapped for you: " + o, o.tapped().contains("Island"));
     }
+
+    /**
+     * Mana kept until end of turn is not "lost" when a window passes, so the
+     * seat is not asked to confirm losing it (fullpod #53: Savage Ventmaw's
+     * mana, asked at every pass of the attack). Sakura-Tribe Springcaller's
+     * {G} arrives at upkeep with the same "you don't lose this mana as steps
+     * and phases end"; every window of the turn before the end phase passes
+     * without the question.
+     */
+    @Test(timeout = 240_000)
+    public void manaKeptUntilEndOfTurnIsNotLostOnAPass() throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("autopay-keep", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), true));
+        Game game = host.game();
+        Player you = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("You".equals(p.getName())) {
+                you = p;
+            }
+        }
+        Assert.assertNotNull(you);
+        List<Card> library = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            library.add(card("Colossal Dreadmaw"));
+        }
+        game.cheat(you.getId(), library, List.of(card("Colossal Dreadmaw")),
+                List.of(new PutToBattlefieldInfo(card("Sakura-Tribe Springcaller"), false)), List.of(), List.of(), List.of());
+        List<String> log = new ArrayList<>();
+        boolean floated = false;
+        host.start();
+        try {
+            for (int i = 0; i < 60; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                Assert.assertNull("render error", d.get("error"));
+                String context = String.valueOf(d.get("context"));
+                String message = String.valueOf(d.get("message"));
+                log.add(context + " " + d.get("action_type") + " " + message);
+                if (!context.startsWith("T1 ") || context.startsWith("T1 End")) {
+                    break; // the end phase empties it, as the rules say
+                }
+                Assert.assertFalse("asked to lose mana that is kept until end of turn: " + log, message.contains("will be lost"));
+                if (d.get("board") != null && GameHostTest.board(d).get("mana_pool") != null) {
+                    floated = true;
+                }
+                Map<String, Object> args = "GAME_TARGET".equals(d.get("action_type")) && message.contains("starting player")
+                        ? Map.of("choice", indexOfYou(d))
+                        : Map.of("choice", "no");
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+        } finally {
+            host.end();
+        }
+        Assert.assertTrue("Springcaller's {G} floated on turn 1: " + log, floated);
+    }
 }
