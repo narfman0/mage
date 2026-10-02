@@ -152,6 +152,10 @@ public final class GameHost {
         return t;
     });
     private volatile int snapshotSeq = -1;
+    private volatile int snapshotTurn = -1; // the turn of the question the file was written at
+    // A park's read of the status (snapshotFinal) stops every write after it,
+    // so the board it describes is the one that stays on disk (fullpod #50).
+    private volatile boolean snapshotsStopped;
     private volatile long snapshotBytes;
     private volatile long snapshotMs;
     private volatile String snapshotError;
@@ -1863,7 +1867,7 @@ public final class GameHost {
 
     private void writeSnapshot(long debounceMs, boolean command) {
         Thread t = gameThread;
-        if (t == null) {
+        if (t == null || snapshotsStopped) {
             return;
         }
         long done = snapshotDoneAt;
@@ -1898,9 +1902,10 @@ public final class GameHost {
             }
         }
         synchronized (gameLock) {
-            if (answers.get() != answered || game.getGameSeq() != seq || seq <= wokenSeq || !(parked(t) && anyPending())) {
+            if (snapshotsStopped || answers.get() != answered || game.getGameSeq() != seq || seq <= wokenSeq || !(parked(t) && anyPending())) {
                 return;
             }
+            int turn = game.getTurnNum();
             long t0 = System.currentTimeMillis();
             snapshotWritingSince = t0;
             Map<String, Object> r = new LinkedHashMap<>();
@@ -1921,6 +1926,7 @@ public final class GameHost {
                 snapshotBytes = bytes;
                 snapshotMs = System.currentTimeMillis() - t0;
                 snapshotSeq = seq;
+                snapshotTurn = turn;
                 snapshotError = null;
                 snapshotDoneAt = System.currentTimeMillis();
                 snapshotAgeFrom = snapshotDoneAt;
@@ -1975,11 +1981,26 @@ public final class GameHost {
         return snapshotStatus();
     }
 
-    /** The last snapshot: its game seq, size and cost, or the error that stopped it. */
+    /**
+     * The status a park records (fullpod #50): no write starts after this,
+     * and one in progress is waited out (it holds the lock), so the status
+     * names the file that stays — read before, a write finishing in the gap
+     * between the park's read and {@code end_game} put another board on disk
+     * than the one {@code game.parked} described. The game is about to end.
+     */
+    public Map<String, Object> snapshotFinal() {
+        snapshotsStopped = true;
+        synchronized (gameLock) {
+            return snapshotStatus();
+        }
+    }
+
+    /** The last snapshot: its game seq and turn, size and cost, or the error that stopped it. */
     public Map<String, Object> snapshotStatus() {
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("path", snapshotPath == null ? null : snapshotPath.toString());
         r.put("seq", snapshotSeq < 0 ? null : snapshotSeq);
+        r.put("turn", snapshotSeq < 0 ? null : snapshotTurn);
         r.put("bytes", snapshotSeq < 0 ? null : snapshotBytes);
         r.put("ms", snapshotSeq < 0 ? null : snapshotMs);
         r.put("error", snapshotError);

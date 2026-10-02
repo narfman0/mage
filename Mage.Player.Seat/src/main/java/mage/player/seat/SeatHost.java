@@ -215,7 +215,8 @@ public final class SeatHost {
             case "rollback" -> r.put("success", game(args).rollback(seat(args), ((Number) args.getOrDefault("turns", 0)).intValue()));
             case "take_back" -> r.putAll(game(args).takeBack(seat(args)));
             case "concede" -> game(args).concede(seat(args));
-            case "snapshot" -> r.putAll(Boolean.TRUE.equals(args.get("now")) ? game(args).snapshotNow() : game(args).snapshotStatus());
+            case "snapshot" -> r.putAll(Boolean.TRUE.equals(args.get("now")) ? game(args).snapshotNow()
+                    : Boolean.TRUE.equals(args.get("final")) ? game(args).snapshotFinal() : game(args).snapshotStatus());
             case "busy" -> r.put("busy", game(args).busy());
             case "set" -> {
                 GameHost host = game(args);
