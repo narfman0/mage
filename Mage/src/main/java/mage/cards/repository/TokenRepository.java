@@ -54,7 +54,12 @@ public enum TokenRepository {
     TokenRepository() {
     }
 
-    public void init() {
+    /**
+     * Fills the repository on first use. Synchronized: several games can start
+     * in one JVM at the same moment, and a thread that saw the list half
+     * filled would read it while another was still adding to it.
+     */
+    public synchronized void init() {
         if (!allTokens.isEmpty()) {
             return;
         }
