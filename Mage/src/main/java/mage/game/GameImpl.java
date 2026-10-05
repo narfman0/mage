@@ -1242,7 +1242,14 @@ public abstract class GameImpl implements Game {
         boolean wasPaused = state.isPaused();
         state.resume();
         if (!checkIfGameIsOver()) {
-            informPlayers("Turn " + state.getTurnNum());
+            // A resumed game tells the table its turn without logging it: the
+            // "Turn N" line is already in the record from before the save, and
+            // logging it again takes a game seq, so a resumed game's seqs would
+            // not continue from the snapshot's (fullpod's SnapshotResumeTest).
+            if (!simulation) {
+                makeSureCalledOutsideLayerEffects();
+                tableEventSource.fireTableEvent(EventType.INFO, "Turn " + state.getTurnNum(), this);
+            }
             if (checkStopOnTurnOption()) {
                 return;
             }

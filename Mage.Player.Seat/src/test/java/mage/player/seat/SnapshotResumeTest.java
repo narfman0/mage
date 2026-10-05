@@ -609,7 +609,8 @@ public class SnapshotResumeTest {
      * refresh, a fork commit that adds a field) and the resume test says the
      * fixture no longer reads. The permanent zone is put under a random key
      * before the write, which is what a process from before the constant
-     * key wrote, so the fixture keeps testing the heal on read.
+     * key wrote, so the fixture keeps testing the heal on read; and it is
+     * written in format 1, so it keeps testing the by-name upgrade too.
      */
     @Test(timeout = 300_000)
     public void recordForeignFixture() throws Exception {
@@ -620,7 +621,16 @@ public class SnapshotResumeTest {
         host.start();
         playTo(host, script, "You", 2);
         rekeyPermanent(host.game().getExile(), UUID.randomUUID());
-        long bytes = Snapshot.write(host.game(), host.seatKeys(), Path.of(FOREIGN_FIXTURE));
+        // Format 1, the version and the game with no seat map: the fixture is a
+        // board from before seat ids were recorded, which is what
+        // aBoardFromBeforeIdsResumesByNameAndIsAddressedById resumes (fullpod #24).
+        // Snapshot.write only writes the current format.
+        Path fixture = Path.of(FOREIGN_FIXTURE);
+        try (ObjectOutputStream out = new ObjectOutputStream(new java.util.zip.GZIPOutputStream(Files.newOutputStream(fixture)))) {
+            out.writeInt(1);
+            out.writeObject(host.game());
+        }
+        long bytes = Files.size(fixture);
         LOG.info("recorded " + FOREIGN_FIXTURE + " (" + bytes + " bytes)");
         host.end();
     }
