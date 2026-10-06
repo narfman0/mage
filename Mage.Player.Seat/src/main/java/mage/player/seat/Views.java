@@ -773,7 +773,7 @@ public final class Views {
         // `original` is built without the game, so it never carries hints:
         // compare the rules alone, or every hinted permanent reads as modified.
         Fmt.Split split = Fmt.splitRules(perm.getRules());
-        CardView orig = perm.getOriginal();
+        CardView orig = perm.getOriginal() != null ? perm.getOriginal() : printedCard(perm, game);
         if (orig != null && !Objects.equals(split.rules(), Fmt.splitRules(orig.getRules()).rules())) {
             info.put("modified", true);
         }
@@ -917,6 +917,25 @@ public final class Views {
      */
     private static boolean faceDown(PermanentView perm) {
         return perm.isMorphed() || perm.isManifested() || perm.isDisguised() || perm.isCloaked();
+    }
+
+    /**
+     * What `modified` compares a permanent's rules with when the view has no
+     * `original`: the card read from the game, as the view would have built
+     * it (`PermanentView`). XMage builds `original` only for a token or a
+     * permanent the viewer controls, so without this an opponent's permanent
+     * is never flagged — Urborg makes their Forest tap for {B}, Swiftfoot
+     * Boots make their creature hexproof, and the board says nothing (fullpod
+     * #79). Null for a face-down permanent (its card is hidden information,
+     * and a flag compared against it would carry some) and for a copy, whose
+     * card is not what it is a copy of (a copy is flagged `copy` already).
+     */
+    static CardView printedCard(PermanentView perm, Game game) {
+        if (perm.isToken() || perm.isCopy() || faceDown(perm) || game == null) {
+            return null;
+        }
+        Card card = game.getCard(perm.getId());
+        return card == null ? null : new CardView(card.copy(), (Game) null);
     }
 
     /** The printed power and toughness of a creature permanent, or null when
