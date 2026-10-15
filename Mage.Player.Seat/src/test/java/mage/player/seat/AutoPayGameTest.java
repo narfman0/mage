@@ -706,4 +706,237 @@ public class AutoPayGameTest {
         }
         Assert.assertTrue("Springcaller's {G} floated on turn 1: " + log, floated);
     }
+
+    /**
+     * A payment answered as a whole (fullpod #84): what the first mana prompt
+     * suggested (by source name, a pool colour once per pip), the `pay`
+     * answer's fate, how many mana prompts followed it, and how many other
+     * questions (a colour to make) came between the cast and the next window.
+     */
+    private record PlanOutcome(Outcome outcome, List<String> suggested, int promptsAfter, int otherPrompts) {
+    }
+
+    /**
+     * Float {@code floatFirst} at priority, cast {@code spell}, and answer the
+     * first mana prompt with {@code pay=…}: the suggestion when {@code payWith}
+     * is null, else these names (a pool colour by its name; "Breeding
+     * Pool={U}" the ability of a source that makes blue). Every mana
+     * prompt after it is cancelled and counted; a list question in between
+     * (which colour) takes its first entry and is counted.
+     */
+    private PlanOutcome playPlan(String spell, List<String> floatFirst, List<String> payWith, String... battlefield) throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("autopay-plan", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), true));
+        Game game = host.game();
+        Player you = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("You".equals(p.getName())) {
+                you = p;
+            }
+        }
+        Assert.assertNotNull(you);
+        List<PutToBattlefieldInfo> perms = new ArrayList<>();
+        for (String name : battlefield) {
+            perms.add(new PutToBattlefieldInfo(card(name), false));
+        }
+        List<Card> library = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            library.add(card("Colossal Dreadmaw"));
+        }
+        game.cheat(you.getId(), library, List.of(card(spell)), perms, List.of(), List.of(), List.of());
+        List<String> toFloat = new ArrayList<>(floatFirst);
+        boolean cast = false;
+        boolean planned = false;
+        List<String> suggested = new ArrayList<>();
+        int promptsAfter = 0;
+        int otherPrompts = 0;
+        Set<String> tapped = new HashSet<>();
+        Set<String> untapped = new HashSet<>();
+        int life = -1;
+        List<String> log = new ArrayList<>();
+        List<String> prompts = new ArrayList<>();
+        host.start();
+        try {
+            for (int i = 0; i < 60; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                if (Boolean.TRUE.equals(d.get("game_over"))) {
+                    break;
+                }
+                Assert.assertNull("render error", d.get("error"));
+                String type = String.valueOf(d.get("action_type"));
+                String message = String.valueOf(d.get("message"));
+                log.add(d.get("context") + " " + type + " " + message);
+                boolean priority = "GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null;
+                boolean mana = "GAME_PLAY_MANA".equals(type) || "GAME_PLAY_XMANA".equals(type);
+                if (cast && mana && !planned) {
+                    planned = true;
+                    List<Map<String, Object>> choices = ScriptedSeat.choices(d);
+                    List<String> offered = new ArrayList<>();
+                    for (Map<String, Object> c : choices) {
+                        offered.add(c.get("name") + "#" + c.get("id"));
+                    }
+                    prompts.add(message + " | " + String.join(", ", offered));
+                    List<Object> indices = new ArrayList<>();
+                    Object raw = d.get("suggested");
+                    if (raw instanceof List<?> list) {
+                        for (Object o : list) {
+                            int at = ((Number) o).intValue();
+                            suggested.add(String.valueOf(choices.get(at).get("name")));
+                            indices.add(at);
+                        }
+                    }
+                    if (payWith != null) {
+                        indices.clear();
+                        for (String name : payWith) {
+                            // "Breeding Pool={U}": the source's ability that makes blue
+                            // (a shock land is two mana abilities, one per colour).
+                            String produce = name.contains("=") ? name.substring(name.indexOf('=') + 1) : null;
+                            String want = produce == null ? name : name.substring(0, name.indexOf('='));
+                            Integer at = null;
+                            for (Map<String, Object> c : choices) {
+                                if (want.equals(c.get("name")) && (produce == null || String.valueOf(c.get("ability")).contains(produce) || String.valueOf(c.get("produces")).contains(produce))) {
+                                    at = ((Number) c.get("index")).intValue();
+                                    break;
+                                }
+                            }
+                            Assert.assertNotNull(name + " is offered: " + prompts, at);
+                            indices.add(at);
+                        }
+                    }
+                    Map<String, Object> answered = host.chooseAction("You", Map.of("pay", indices));
+                    Assert.assertTrue("pay rejected: " + answered + " for " + d, Boolean.TRUE.equals(answered.get("success")));
+                    continue;
+                }
+                if (cast && mana) {
+                    promptsAfter++;
+                    prompts.add(message);
+                    Map<String, Object> answered = host.chooseAction("You", Map.of("choice", "no"));
+                    Assert.assertTrue("cancel rejected: " + answered, Boolean.TRUE.equals(answered.get("success")));
+                    continue;
+                }
+                if (cast && !priority) {
+                    otherPrompts++;
+                    log.add("  other: " + message);
+                    Map<String, Object> answered = host.chooseAction("You", Map.of("choice", "GAME_CHOOSE_CHOICE".equals(type) ? "0" : "no"));
+                    Assert.assertTrue("answer rejected: " + answered + " for " + d, Boolean.TRUE.equals(answered.get("success")));
+                    continue;
+                }
+                if (cast) {
+                    Map<String, Object> board = GameHostTest.board(d);
+                    for (Object o : (List<?>) board.get("battlefield")) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> perm = (Map<String, Object>) o;
+                        if (spell.equals(String.valueOf(perm.get("name")))) {
+                            continue;
+                        }
+                        (Boolean.TRUE.equals(perm.get("tapped")) ? tapped : untapped).add(String.valueOf(perm.get("name")));
+                    }
+                    life = ((Number) board.get("life")).intValue();
+                    break;
+                }
+                Map<String, Object> args = null;
+                if (priority && !toFloat.isEmpty()) {
+                    String want = toFloat.get(0);
+                    for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                        if ("mana".equals(c.get("action")) && want.equals(c.get("name"))) {
+                            args = Map.of("choice", String.valueOf(c.get("index")));
+                            toFloat.remove(0);
+                            break;
+                        }
+                    }
+                }
+                String castIdx = args == null && priority && toFloat.isEmpty() ? castIndex(d, spell) : null;
+                if (args == null && castIdx != null) {
+                    cast = true;
+                    args = Map.of("choice", castIdx);
+                } else if (args == null && "GAME_TARGET".equals(type) && message.contains("starting player")) {
+                    args = Map.of("choice", indexOfYou(d));
+                } else if (args == null) {
+                    args = Map.of("choice", "no");
+                }
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+        } finally {
+            host.end();
+        }
+        Assert.assertTrue("the mana prompt reached the seat: " + log, planned);
+        PlanOutcome out = new PlanOutcome(new Outcome(1 + promptsAfter, cast, tapped, untapped, life, log, prompts), suggested, promptsAfter, otherPrompts);
+        LOG.info(spell + " plan with " + List.of(battlefield) + " -> " + out);
+        return out;
+    }
+
+    /** Forest or Island for Sol Ring's {1}: the prompt suggests one land, and paying with the suggestion taps just that. */
+    @Test(timeout = 240_000)
+    public void aSuggestedPaymentIsOneAnswer() throws Exception {
+        PlanOutcome o = playPlan("Sol Ring", List.of(), null, "Forest", "Island");
+        Assert.assertEquals("one land suggested: " + o, 1, o.suggested().size());
+        Assert.assertTrue("cast: " + o, o.outcome().cast());
+        Assert.assertEquals("no further prompt: " + o, 0, o.promptsAfter());
+        Assert.assertEquals("one land tapped: " + o, 1, o.outcome().tapped().size());
+        Assert.assertEquals(Set.of(o.suggested().get(0)), o.outcome().tapped());
+    }
+
+    /** Two sources in one answer: both tapped, no second prompt — where a source per prompt used to be the engine's loop. */
+    @Test(timeout = 240_000)
+    public void aPlanTapsEverySourceWithoutAFurtherPrompt() throws Exception {
+        PlanOutcome o = playPlan("Grizzly Bears", List.of(), List.of("Island", "Forest"), "Forest", "Island", "Swamp");
+        Assert.assertTrue("cast: " + o, o.outcome().cast());
+        Assert.assertEquals("no further prompt: " + o, 0, o.promptsAfter());
+        Assert.assertEquals(Set.of("Forest", "Island"), o.outcome().tapped());
+        Assert.assertEquals(Set.of("Swamp"), o.outcome().untapped());
+    }
+
+    /**
+     * Trygon Predator's {1}{G}{U} off Breeding Pool, Forest, Swamp and
+     * Mountain (Swamp or Mountain for the {1}: asked): with both colours
+     * owed, tapping the Pool by hand asks which to make. In a plan the Pool
+     * is tapped for the blue nothing else makes, and nothing is asked.
+     */
+    @Test(timeout = 240_000)
+    public void aDualInThePlanAsksNoColour() throws Exception {
+        PlanOutcome o = playPlan("Trygon Predator", List.of(), List.of("Breeding Pool={U}", "Forest", "Swamp"), "Breeding Pool", "Forest", "Swamp", "Mountain");
+        Assert.assertTrue("cast: " + o, o.outcome().cast());
+        Assert.assertEquals("no colour question: " + o.outcome().log(), 0, o.otherPrompts());
+        Assert.assertEquals("no further prompt: " + o, 0, o.promptsAfter());
+        Assert.assertEquals(Set.of("Breeding Pool", "Forest", "Swamp"), o.outcome().tapped());
+    }
+
+    /**
+     * Tap your own mana first: {G} and {B} floating, Grizzly Bears cast. The
+     * suggestion is the float — Green for the {G}, Black for the {1} — never
+     * the untapped Island, and the plan spends both pips in the one answer.
+     */
+    @Test(timeout = 240_000)
+    public void floatingManaIsSuggestedFirstAndSpentInThePlan() throws Exception {
+        PlanOutcome o = playPlan("Grizzly Bears", List.of("Forest", "Swamp"), null, "Forest", "Swamp", "Island");
+        Assert.assertEquals("the float, one entry per pip: " + o, List.of("Green", "Black"), o.suggested());
+        Assert.assertTrue("cast: " + o, o.outcome().cast());
+        Assert.assertEquals("no further prompt: " + o, 0, o.promptsAfter());
+        Assert.assertTrue("the Island stays up: " + o, o.outcome().untapped().contains("Island"));
+    }
+
+    /**
+     * A plan that covers only part of the cost: the engine taps it, and the
+     * prompt comes back for the rest — the Forest for {1}{G}'s {G}, then
+     * Island or Swamp for the {1} is the person's again.
+     */
+    @Test(timeout = 240_000)
+    public void aPlanThatUnderpaysComesBackForTheRest() throws Exception {
+        PlanOutcome o = playPlan("Grizzly Bears", List.of(), List.of("Forest"), "Forest", "Island", "Swamp");
+        Assert.assertEquals("asked again for the {1}: " + o.outcome().prompts(), 1, o.promptsAfter());
+        Assert.assertTrue("what is left is asked: " + o.outcome().prompts(), o.outcome().prompts().get(1).startsWith("Pay {1}"));
+    }
+
+    /** A person's suggestion may tap a Signet, with the land that pays for it: Kaalia off Boros Signet, Plains and two Swamps. */
+    @Test(timeout = 240_000)
+    public void aSuggestionMayIncludeASignetAndPaysItsCostFromTheChosenLand() throws Exception {
+        PlanOutcome o = playPlan("Kaalia of the Vast", List.of(), null, "Boros Signet", "Plains", "Swamp", "Swamp");
+        Assert.assertTrue("the Signet is suggested: " + o, o.suggested().contains("Boros Signet"));
+        Assert.assertEquals("four sources for {1}{R}{W}{B}, the Signet's land among them: " + o, 4, o.suggested().size());
+        Assert.assertTrue("cast: " + o, o.outcome().cast());
+        Assert.assertEquals("no further prompt: " + o.outcome().log(), 0, o.promptsAfter());
+        Assert.assertEquals("no colour question: " + o.outcome().log(), 0, o.otherPrompts());
+        Assert.assertTrue("everything tapped: " + o, o.outcome().untapped().isEmpty());
+    }
 }

@@ -46,10 +46,12 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import org.apache.log4j.Logger;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -122,6 +124,46 @@ public class SeatPlayer extends HumanPlayer {
     /** A tap the plan has resolved to the engine's objects. */
     private record Planned(ActivatedManaAbilityImpl ability, Permanent permanent, AutoPay.Kind make) {
     }
+
+    /**
+     * One step of a payment a person answered as a whole (fullpod #84): a
+     * source to tap for the kind of mana the plan wants from it — with the
+     * taps for its own cost when it has one (a Signet) — or one pip of
+     * floating mana to spend ({@code pool}). Game thread only.
+     */
+    private record Step(UUID objectId, ActivatedManaAbilityImpl ability, AutoPay.Kind make, List<Planned> costTaps, ManaType pool) {
+
+        static Step pool(ManaType type) {
+            return new Step(null, null, null, List.of(), type);
+        }
+    }
+
+    /**
+     * The payment the person answered the prompt with, consumed one step per
+     * {@link #playManaHandling} call while the engine pays for
+     * {@link #planFor}; a step the engine no longer allows drops the rest,
+     * and the prompt is the person's again for what is left. {@code planSpec}
+     * is the answer as it arrived ({@code "plan:p3.0,p5.0,R"}: a source's
+     * short id and the index of its mana ability, or a floating pip's
+     * letter), parsed on the game thread where the cost and the board are at
+     * hand. The record keeps that string, so a replay sends it again and the
+     * seat makes the same taps.
+     */
+    private transient Deque<Step> plan = new ArrayDeque<>();
+    private transient UUID planFor;
+    private transient volatile String planSpec;
+
+    /**
+     * What the prompt about to be asked suggests paying with, in the same
+     * form as a plan's steps, floating mana first; empty when nothing clean
+     * covers the cost. Written on the game thread before the prompt fires,
+     * read by {@link DecisionRenderer} as it renders it.
+     */
+    private transient volatile List<String> suggestion = List.of();
+
+    private static final ManaType[] POOL_TYPES = {
+        ManaType.WHITE, ManaType.BLUE, ManaType.BLACK, ManaType.RED, ManaType.GREEN, ManaType.COLORLESS,
+    };
 
     public SeatPlayer(String name, RangeOfInfluence range) {
         super(name, range, 0);
@@ -346,10 +388,38 @@ public class SeatPlayer extends HumanPlayer {
             tap(next.ability(), next.permanent(), next.make(), unpaid, game);
             return true;
         }
+        if (plan == null) {
+            plan = new ArrayDeque<>(); // a copy read back from a snapshot
+        }
+        UUID payingFor = abilityToCast == null ? null : abilityToCast.getSourceId();
+        if (planSpec != null) {
+            String spec = planSpec;
+            planSpec = null;
+            plan = parsePlan(spec, abilityToCast, unpaid, game);
+            planFor = payingFor;
+        }
+        if (!plan.isEmpty() && Objects.equals(planFor, payingFor)) {
+            Step step = plan.poll();
+            if (step.pool() != null) {
+                // One floating pip: unlocked for the pay loop's next assignPayment,
+                // which spends one of that type and locks again (ManaPool.pay) —
+                // the pool button's own path, one step per pip.
+                getManaPool().unlockManaType(step.pool());
+                return true;
+            }
+            MageObject object = game.getObject(step.objectId());
+            Zone zone = game.getState().getZone(step.objectId());
+            if (object != null && zone != null && getUseableManaAbilities(object, zone, game).containsKey(step.ability().getId())) {
+                tapPlanned(step, object, unpaid, game);
+                return true;
+            }
+            LOG.info("plan step no longer allowed (" + (object == null ? step.objectId() : object.getName()) + "): the rest is the person's again");
+            plan.clear();
+        }
         if (autoPay && unpaid != null && !mustAsk(abilityToCast, game)) {
             Map<UUID, ActivatedManaAbilityImpl> abilities = new HashMap<>();
             Map<UUID, Permanent> permanents = new HashMap<>();
-            List<AutoPay.Source> sources = sources(abilityToCast, game, askWhenAmbiguous, abilities, permanents);
+            List<AutoPay.Source> sources = sources(abilityToCast, game, askWhenAmbiguous, !askWhenAmbiguous, abilities, permanents);
             List<AutoPay.Pip> pips = pips(unpaid);
             AutoPay.Plan plan = AutoPay.plan(pips, sources);
             if (LOG.isDebugEnabled()) {
@@ -399,23 +469,289 @@ public class SeatPlayer extends HumanPlayer {
                 return false;
             }
         }
-        return super.playManaHandling(abilityToCast, unpaid, promptText, game);
+        // The prompt: what it suggests is worked out here, where the cost is,
+        // and read by the renderer as the question fires inside HumanPlayer.
+        planSpec = null;
+        suggestion = unpaid == null ? List.of() : suggest(abilityToCast, unpaid, game);
+        try {
+            return super.playManaHandling(abilityToCast, unpaid, promptText, game);
+        } finally {
+            suggestion = List.of();
+        }
+    }
+
+    /**
+     * A plan answer (fullpod #84) arrives as a string response; it is kept
+     * aside here and parsed on the game thread when the pay loop comes back
+     * round, so a replay that sends the recorded string takes the same path.
+     * HumanPlayer takes an unknown string as "nothing paid, ask again".
+     */
+    @Override
+    public void setResponseString(String responseString) {
+        if (responseString != null && responseString.startsWith("plan:")) {
+            planSpec = responseString;
+        }
+        super.setResponseString(responseString);
+    }
+
+    /** The prompt's suggested payment, as the steps of a plan ("p3.0", "R"); empty off the game thread's prompt. */
+    public List<String> suggestion() {
+        return suggestion;
     }
 
     /**
      * One tap of the plan: the one ability, so the engine never asks "which"
      * of a source's several; a colour choice on the way is auto-picked by
      * HumanPlayer from currentlyUnpaidMana, so that is the one colour the
-     * plan wants.
+     * plan wants ({@code make} null: the real unpaid cost, HumanPlayer's own
+     * pick or question).
      */
-    private void tap(ActivatedManaAbilityImpl ability, Permanent perm, AutoPay.Kind make, ManaCost unpaid, Game game) {
+    private void tap(ActivatedManaAbilityImpl ability, MageObject object, AutoPay.Kind make, ManaCost unpaid, Game game) {
         ManaCost before = currentlyUnpaidMana;
         currentlyUnpaidMana = colourCost(make, unpaid);
         try {
-            activateAbility(Map.of(ability.getId(), ability), perm, game);
+            activateAbility(Map.of(ability.getId(), ability), object, game);
         } finally {
             currentlyUnpaidMana = before;
         }
+    }
+
+    /** A plan's tap, its own cost (a Signet's {1}) answered from the plan's taps for it, as the silent path does. */
+    private void tapPlanned(Step step, MageObject object, ManaCost unpaid, Game game) {
+        if (step.costTaps().isEmpty()) {
+            tap(step.ability(), object, step.make(), unpaid, game);
+            return;
+        }
+        Deque<Planned> previous = costTaps;
+        UUID previousFor = costTapsFor;
+        costTaps = new ArrayDeque<>(step.costTaps());
+        costTapsFor = object.getId();
+        try {
+            tap(step.ability(), object, step.make(), unpaid, game);
+        } finally {
+            costTaps = previous;
+            costTapsFor = previousFor;
+        }
+    }
+
+    /**
+     * The payment to suggest (fullpod #84): floating mana the cost can spend
+     * first — a coloured or {C} pip from its own kind, then generic pips from
+     * whatever floats — and for the rest the clean sources' pilot choice
+     * ({@link AutoPay}: waste least, keep the most kinds up), a Signet or a
+     * filter land included, since a person confirms a suggestion and a
+     * costly tap is theirs to see and keep. Nothing when the pips aren't
+     * modelled or the clean sources can't cover what the float leaves: the
+     * prompt is then as it always was.
+     */
+    List<String> suggest(Ability abilityToCast, ManaCost unpaid, Game game) {
+        List<AutoPay.Pip> pips = pips(unpaid);
+        if (pips == null || pips.isEmpty()) {
+            return List.of();
+        }
+        List<String> out = new ArrayList<>();
+        List<AutoPay.Pip> left = new ArrayList<>(pips);
+        spendFloat(left, new EnumMap<>(spendablePool(game)), out);
+        if (!left.isEmpty()) {
+            Map<UUID, ActivatedManaAbilityImpl> abilities = new HashMap<>();
+            Map<UUID, Permanent> permanents = new HashMap<>();
+            AutoPay.Plan plan = AutoPay.plan(left, sources(abilityToCast, game, true, true, abilities, permanents));
+            if (!plan.payable()) {
+                return List.of();
+            }
+            for (AutoPay.Pick pick : plan.picks()) {
+                out.add(spec(pick.source().id(), abilities.get(pick.output().abilityId()), game));
+                for (AutoPay.Pick c : pick.costPicks()) {
+                    out.add(spec(c.source().id(), abilities.get(c.output().abilityId()), game));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Floating mana against the pips, removing each pip it pays and adding
+     * the type's letter to {@code out}: pips of one kind first from that
+     * kind, then hybrid and generic pips from colorless if any floats, else
+     * the most plentiful colour — what the pay loop does with each unlocked
+     * pip, worked out ahead so the plan's taps are for what is left.
+     */
+    private static void spendFloat(List<AutoPay.Pip> pips, Map<ManaType, Integer> pool, List<String> out) {
+        for (int pass = 0; pass < 2; pass++) {
+            Iterator<AutoPay.Pip> it = pips.iterator();
+            while (it.hasNext()) {
+                AutoPay.Pip pip = it.next();
+                boolean exact = pip.accepts().size() == 1;
+                if (exact != (pass == 0)) {
+                    continue;
+                }
+                ManaType type = null;
+                for (ManaType t : POOL_TYPES) {
+                    if (pip.accepts().contains(kindOf(t)) && pool.getOrDefault(t, 0) > 0
+                            && (type == null || t == ManaType.COLORLESS || (type != ManaType.COLORLESS && pool.get(t) > pool.get(type)))) {
+                        type = t;
+                    }
+                }
+                if (type != null) {
+                    pool.merge(type, -1, Integer::sum);
+                    out.add(letter(type));
+                    it.remove();
+                }
+            }
+        }
+    }
+
+    /** A plan step for a source: its short id, and the index of the ability among the source's useable mana abilities. */
+    private String spec(UUID id, ActivatedManaAbilityImpl ability, Game game) {
+        MageObject object = game.getObject(id);
+        int index = 0;
+        int k = 0;
+        for (ActivatedManaAbilityImpl a : getUseableManaAbilities(object, game.getState().getZone(id), game).values()) {
+            if (a.getId().equals(ability.getId())) {
+                index = k;
+                break;
+            }
+            k++;
+        }
+        return game.getShortIdRegistry().getOrAssign(id) + "." + index;
+    }
+
+    /**
+     * The plan a person answered with, as steps: its floating pips first,
+     * then its sources — tapped for the kinds the planner wants from
+     * exactly these sources (so a dual tapped for {G}{U}'s {U} asks no
+     * colour, and a Signet's {1} comes from a chosen land), in the order
+     * given with the engine's own colour handling when the planner can't
+     * cover the cost from them (a source it doesn't model; too few picked).
+     * A source the plan names that the board no longer has is skipped.
+     */
+    private Deque<Step> parsePlan(String spec, Ability abilityToCast, ManaCost unpaid, Game game) {
+        Deque<Step> out = new ArrayDeque<>();
+        List<ManaType> pool = new ArrayList<>();
+        Map<UUID, ActivatedManaAbilityImpl> chosen = new LinkedHashMap<>();
+        for (String token : spec.substring("plan:".length()).split(",")) {
+            token = token.trim();
+            if (token.isEmpty()) {
+                continue;
+            }
+            ManaType type = typeOf(token);
+            if (type != null) {
+                pool.add(type);
+                continue;
+            }
+            int dot = token.indexOf('.');
+            String shortId = dot < 0 ? token : token.substring(0, dot);
+            int index = 0;
+            try {
+                index = dot < 0 ? 0 : Integer.parseInt(token.substring(dot + 1));
+            } catch (NumberFormatException ignored) {
+                // the first ability
+            }
+            UUID id = game.getShortIdRegistry().tryResolve(shortId);
+            MageObject object = id == null ? null : game.getObject(id);
+            Zone zone = id == null ? null : game.getState().getZone(id);
+            if (object == null || zone == null) {
+                LOG.warn("plan names a source the game doesn't have: " + token);
+                continue;
+            }
+            List<ActivatedManaAbilityImpl> abilities = new ArrayList<>(getUseableManaAbilities(object, zone, game).values());
+            if (index < 0 || index >= abilities.size()) {
+                LOG.warn("plan names an ability " + object.getName() + " can't use now: " + token);
+                continue;
+            }
+            chosen.put(id, abilities.get(index));
+        }
+        for (ManaType t : pool) {
+            out.add(Step.pool(t));
+        }
+        List<AutoPay.Pip> pips = pips(unpaid);
+        if (pips != null && !pips.isEmpty() && !chosen.isEmpty()) {
+            List<AutoPay.Pip> left = new ArrayList<>(pips);
+            Map<ManaType, Integer> floating = new EnumMap<>(ManaType.class);
+            for (ManaType t : pool) {
+                floating.merge(t, 1, Integer::sum);
+            }
+            spendFloat(left, floating, new ArrayList<>());
+            Map<UUID, ActivatedManaAbilityImpl> abilities = new HashMap<>();
+            Map<UUID, Permanent> permanents = new HashMap<>();
+            List<AutoPay.Source> sources = new ArrayList<>();
+            for (AutoPay.Source s : sources(abilityToCast, game, false, true, abilities, permanents)) {
+                ActivatedManaAbilityImpl want = chosen.get(s.id());
+                if (want == null) {
+                    continue;
+                }
+                List<AutoPay.Output> outputs = new ArrayList<>();
+                for (AutoPay.Output o : s.outputs()) {
+                    if (o.abilityId().equals(want.getId())) {
+                        outputs.add(o);
+                    }
+                }
+                if (!outputs.isEmpty()) {
+                    sources.add(new AutoPay.Source(s.id(), s.key() + "|chosen", outputs, s.clean()));
+                }
+            }
+            AutoPay.Plan planned = left.isEmpty() ? AutoPay.Plan.NONE : AutoPay.plan(left, sources);
+            if (planned.payable()) {
+                Set<UUID> used = new HashSet<>();
+                for (AutoPay.Pick pick : planned.picks()) {
+                    List<Planned> cost = new ArrayList<>();
+                    for (AutoPay.Pick c : pick.costPicks()) {
+                        cost.add(new Planned(abilities.get(c.output().abilityId()), permanents.get(c.source().id()), c.make()));
+                        used.add(c.source().id());
+                    }
+                    out.add(new Step(pick.source().id(), abilities.get(pick.output().abilityId()), pick.make(), cost, null));
+                    used.add(pick.source().id());
+                }
+                // Picked but not needed: after the planned taps, where the pay
+                // loop ends before it reaches them once the cost is paid.
+                for (Map.Entry<UUID, ActivatedManaAbilityImpl> e : chosen.entrySet()) {
+                    if (!used.contains(e.getKey())) {
+                        out.add(new Step(e.getKey(), e.getValue(), null, List.of(), null));
+                    }
+                }
+                return out;
+            }
+        }
+        for (Map.Entry<UUID, ActivatedManaAbilityImpl> e : chosen.entrySet()) {
+            out.add(new Step(e.getKey(), e.getValue(), null, List.of(), null));
+        }
+        return out;
+    }
+
+    /** A floating pip's letter in a plan or a suggestion: W, U, B, R, G or C. */
+    public static String letter(ManaType type) {
+        return switch (type) {
+            case WHITE -> "W";
+            case BLUE -> "U";
+            case BLACK -> "B";
+            case RED -> "R";
+            case GREEN -> "G";
+            case COLORLESS -> "C";
+            case GENERIC -> "C";
+        };
+    }
+
+    private static ManaType typeOf(String letter) {
+        return switch (letter) {
+            case "W" -> ManaType.WHITE;
+            case "U" -> ManaType.BLUE;
+            case "B" -> ManaType.BLACK;
+            case "R" -> ManaType.RED;
+            case "G" -> ManaType.GREEN;
+            case "C" -> ManaType.COLORLESS;
+            default -> null;
+        };
+    }
+
+    private static AutoPay.Kind kindOf(ManaType type) {
+        return switch (type) {
+            case WHITE -> AutoPay.Kind.W;
+            case BLUE -> AutoPay.Kind.U;
+            case BLACK -> AutoPay.Kind.B;
+            case RED -> AutoPay.Kind.R;
+            case GREEN -> AutoPay.Kind.G;
+            default -> AutoPay.Kind.C;
+        };
     }
 
     private static List<AutoPay.Source> withoutCostly(List<AutoPay.Source> sources) {
@@ -600,6 +936,9 @@ public class SeatPlayer extends HumanPlayer {
 
     /** "{U}" for a plan that wants blue from a source with a choice; the real unpaid cost for a fixed kind. */
     private static ManaCost colourCost(AutoPay.Kind make, ManaCost unpaid) {
+        if (make == null) {
+            return unpaid;
+        }
         return switch (make) {
             case W -> new ManaCostsImpl<>("{W}");
             case U -> new ManaCostsImpl<>("{U}");
@@ -615,9 +954,10 @@ public class SeatPlayer extends HumanPlayer {
      * (no mana, sacrifice, life or counter cost) never spends anything for
      * you; an ability with a sacrifice, life or counter cost is nobody's to
      * use but the player. A mana cost on top of the tap (a Signet's {1}, a
-     * filter land's hybrid pip) is planned for a pilot only, as more of the
-     * same payment ({@link AutoPay.Output#cost}): a person taps a Signet
-     * themselves.
+     * filter land's hybrid pip) is planned with when {@code costly}, as more
+     * of the same payment ({@link AutoPay.Output#cost}): for a pilot, and
+     * in the payment a person is suggested and the plan they answer with —
+     * never on a person's silent path, where a Signet is theirs to tap.
      * A source is <em>clean</em> when nothing but the mana happens: no
      * effect beyond it (Ancient Tomb's damage), no becomes-tapped trigger
      * (City of Brass), not a creature, no attachment, and unrestricted mana
@@ -627,7 +967,7 @@ public class SeatPlayer extends HumanPlayer {
      * prompt. A pilot has no one to ask, so it plans over every tap-only
      * source and prefers the clean ones.
      */
-    private List<AutoPay.Source> sources(Ability abilityToCast, Game game, boolean cleanOnly, Map<UUID, ActivatedManaAbilityImpl> abilities, Map<UUID, Permanent> permanents) {
+    private List<AutoPay.Source> sources(Ability abilityToCast, Game game, boolean cleanOnly, boolean costly, Map<UUID, ActivatedManaAbilityImpl> abilities, Map<UUID, Permanent> permanents) {
         List<AutoPay.Source> sources = new ArrayList<>();
         ManaMade made = new ManaMade(game);
         for (Permanent perm : game.getBattlefield().getAllActivePermanents(playerId)) {
@@ -648,7 +988,7 @@ public class SeatPlayer extends HumanPlayer {
                 }
                 List<AutoPay.Pip> cost = List.of();
                 if (!tapOnly(ability)) {
-                    cost = cleanOnly ? null : manaCostOnTap(ability);
+                    cost = costly ? manaCostOnTap(ability) : null;
                     if (cost == null) {
                         continue;
                     }
