@@ -41,6 +41,10 @@ public class AutoPayTest {
         return basic(Kind.U);
     }
 
+    private static Source swamp() {
+        return basic(Kind.B);
+    }
+
     /** Breeding Pool: two abilities, {G} or {U}. */
     private static Source pool() {
         return source("pool", List.of(Kind.G), List.of(Kind.U));
@@ -248,5 +252,28 @@ public class AutoPayTest {
         Plan p = AutoPay.plan(cost("4UUB"), board);
         Assert.assertTrue(p.payable());
         Assert.assertTrue("a 21-source board plans in well under a second", System.currentTimeMillis() - t0 < 1000);
+    }
+
+    /** Every tap of the chosen plan, the first pick first — what a person is suggested (fullpod #84). */
+    @Test
+    public void picksListEveryTapOfTheChosenPlan() {
+        Plan p = plan("1G", forest(), island(), swamp());
+        Assert.assertTrue(p.ambiguous());
+        Assert.assertEquals("two taps for {1}{G}", 2, p.picks().size());
+        Assert.assertEquals("the first pick is the plan's first tap", p.pick(), p.picks().get(0));
+        List<String> keys = new ArrayList<>();
+        for (var pick : p.picks()) {
+            keys.add(pick.source().key());
+        }
+        Assert.assertTrue("a Forest pays the {G}: " + keys, keys.contains(forest().key()));
+        // One plan, three taps.
+        Assert.assertEquals(3, plan("3", forest(), forest(), forest()).picks().size());
+        // A Signet's cost taps ride on its pick, never as picks of their own.
+        Source signet = new Source(UUID.nameUUIDFromBytes("signet".getBytes()), "signet",
+                List.of(new Output(UUID.randomUUID(), List.of(Kind.R, Kind.W), List.of(Pip.generic()))), true);
+        Plan s = plan("RW", signet, swamp());
+        Assert.assertTrue(s.payable());
+        Assert.assertEquals("the Signet, with the Swamp inside it: " + s.picks(), 1, s.picks().size());
+        Assert.assertEquals(1, s.picks().get(0).costPicks().size());
     }
 }

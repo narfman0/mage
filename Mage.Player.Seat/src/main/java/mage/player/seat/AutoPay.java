@@ -103,10 +103,12 @@ final class AutoPay {
      * more than one way does and none leaves the most up, so the choice is
      * the player's. {@code pick}: the first tap of the one plan — or, when
      * ambiguous, of the plan that wastes least and keeps the most kinds of
-     * mana up, for a seat that never asks.
+     * mana up, for a seat that never asks. {@code picks}: every tap of that
+     * plan, {@code pick} first — what a person is shown as the suggested
+     * payment (fullpod #84), a costly pick carrying the taps for its cost.
      */
-    record Plan(boolean payable, boolean ambiguous, Pick pick) {
-        static final Plan NONE = new Plan(false, false, null);
+    record Plan(boolean payable, boolean ambiguous, Pick pick, List<Pick> picks) {
+        static final Plan NONE = new Plan(false, false, null, List.of());
     }
 
     /** Search budget; past it the plan counts as ambiguous rather than wrong. */
@@ -151,38 +153,43 @@ final class AutoPay {
         List<Terminal> distinct = search.undominated(new ArrayList<>(search.terminals.values()));
         boolean ambiguous = search.truncated || distinct.size() > 1;
         Terminal chosen = ambiguous ? search.pilotChoice(distinct) : distinct.get(0);
-        return new Plan(true, ambiguous, search.firstPick(chosen));
+        List<Pick> picks = search.picks(chosen);
+        return new Plan(true, ambiguous, picks.get(0), picks);
     }
 
     /**
-     * The tap to make now. A costly tap goes first, with the taps that pay
-     * its cost: the engine pays that cost inside the activation, so they
-     * are made there, and the rest of the plan is planned again afterwards.
-     * Each tap of a group is its own member, in tap order, so two Swamps
-     * paying one cost are two Swamps.
+     * The taps of a plan, the one to make now first. A costly tap goes
+     * first, with the taps that pay its cost: the engine pays that cost
+     * inside the activation, so they are made there, and the rest of the
+     * plan is planned again afterwards. A tap that pays another's cost is
+     * carried by that pick, never a pick of its own. Each tap of a group is
+     * its own member, in tap order, so two Swamps paying one cost are two
+     * Swamps.
      */
-    private Pick firstPick(Terminal plan) {
+    private List<Pick> picks(Terminal plan) {
         List<Tap> taps = plan.taps();
         int[] used = new int[groups.size()];
         List<Source> member = new ArrayList<>();
         for (Tap tap : taps) {
             member.add(groups.get(tap.group()).members().get(used[tap.group()]++));
         }
-        int first = 0;
+        List<Pick> costly = new ArrayList<>();
+        List<Pick> plain = new ArrayList<>();
         for (int i = 0; i < taps.size(); i++) {
-            if (taps.get(i).output().costly()) {
-                first = i;
-                break;
+            Tap tap = taps.get(i);
+            if (tap.costOf() >= 0) {
+                continue;
             }
-        }
-        List<Pick> costPicks = new ArrayList<>();
-        for (int i = 0; i < taps.size(); i++) {
-            if (taps.get(i).costOf() == first && taps.get(first).output().costly()) {
-                costPicks.add(new Pick(member.get(i), taps.get(i).output(), taps.get(i).make()));
+            List<Pick> costPicks = new ArrayList<>();
+            for (int j = 0; j < taps.size(); j++) {
+                if (taps.get(j).costOf() == i) {
+                    costPicks.add(new Pick(member.get(j), taps.get(j).output(), taps.get(j).make()));
+                }
             }
+            (tap.output().costly() ? costly : plain).add(new Pick(member.get(i), tap.output(), tap.make(), costPicks));
         }
-        Tap tap = taps.get(first);
-        return new Pick(member.get(first), tap.output(), tap.make(), costPicks);
+        costly.addAll(plain);
+        return costly;
     }
 
     /**

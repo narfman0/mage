@@ -845,6 +845,10 @@ public final class DecisionRenderer {
             CardView cv = views.findCardView(entry.getKey(), view);
             return cv != null ? views.displayName(cv) : "";
         }).thenComparingInt(entry -> views.sequence(entry.getKey())));
+        // Each choice by the step a plan or a suggestion names it with
+        // (SeatPlayer.suggestion: "p3.0" a source's short id and the index of
+        // its ability, "R" a floating pip), so `suggested` is choice indices.
+        Map<String, Integer> specIndex = new HashMap<>();
         for (Map.Entry<UUID, List<SeatPlayer.ManaSource>> entry : sorted) {
             UUID id = entry.getKey();
             if (id.equals(payingFor)) {
@@ -853,9 +857,11 @@ public final class DecisionRenderer {
             List<SeatPlayer.ManaSource> manaAbilities = entry.getValue();
             CardView cv = views.findCardView(id, view);
             String name = cv != null ? views.displayName(cv) : "Unknown (" + id.toString().substring(0, 8) + ")";
+            int nth = 0;
             for (SeatPlayer.ManaSource source : manaAbilities) {
                 String ability = source.rule();
                 Map<String, Object> c = new HashMap<>();
+                specIndex.put(views.shortId(id) + "." + nth++, choices.size());
                 c.put("index", choices.size());
                 c.put("id", views.shortId(id));
                 c.put("choice_type", ability.contains("{T}") ? "tap_source" : "mana_source");
@@ -878,12 +884,26 @@ public final class DecisionRenderer {
         Map<ManaType, Integer> pool = player.spendablePool(game);
         for (ManaType type : poolChoices(pool, e.getMessage())) {
             Map<String, Object> c = new HashMap<>();
+            specIndex.put(SeatPlayer.letter(type), choices.size());
             c.put("index", choices.size());
             c.put("choice_type", "pool_mana");
             c.put("name", prettyManaType(type));
             c.put("count", pool.getOrDefault(type, 0));
             choices.add(c);
             backing.add(type);
+        }
+        // The suggested payment (fullpod #84): the choices to pay with, a pool
+        // colour once per pip, which the board opens with pre-selected and
+        // answers as one `pay`. Absent when the seat has nothing to suggest.
+        List<Integer> suggested = new ArrayList<>();
+        for (String step : player.suggestion()) {
+            Integer at = specIndex.get(step);
+            if (at != null) {
+                suggested.add(at);
+            }
+        }
+        if (!suggested.isEmpty()) {
+            r.put("suggested", suggested);
         }
         int before = choices.size();
         specialActions(choices, backing, game, player.getId(), true);

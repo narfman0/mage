@@ -1246,6 +1246,15 @@ public final class GameHost {
                         return error("invalid_choice", "blockers= only answers a declare-blockers window", true);
                     }
                     taken = batchBlock(seat, d, list(args.get("blockers")));
+                } else if (args.get("pay") != null) {
+                    if (!"GAME_PLAY_MANA".equals(type) && !"GAME_PLAY_XMANA".equals(type)) {
+                        return error("invalid_choice", "pay= only answers a mana prompt", true);
+                    }
+                    Map<String, Object> err = payPlan(seat, d, list(args.get("pay")));
+                    if (err != null) {
+                        return err;
+                    }
+                    taken = "pay";
                 } else if (args.get("amount") != null) {
                     if (!"GAME_GET_AMOUNT".equals(type)) {
                         return error("invalid_choice", "amount= only answers an amount question", true);
@@ -1400,6 +1409,49 @@ public final class GameHost {
     private void recordRemember(Seat seat, String remember) {
         DataCollectorServices.getInstance().onPlayerResponse(game, seat.player.getId(),
                 ServerGameEventLogCollector.REMEMBER, remember);
+    }
+
+    /**
+     * {@code pay=[3,5,9,9]}: the mana prompt's choices to pay with, as one
+     * answer (fullpod #84) — sources by index, a pool colour once per pip.
+     * Sent to the seat as a string ({@code "plan:p3.0,p5.0,R,R"}: a source's
+     * short id and the index of the ability among the source's choices, or
+     * a colour's letter), which is what the record keeps and a replay sends
+     * again; {@link SeatPlayer} taps them one engine round at a time with no
+     * further question. The engine judges every tap as it is made.
+     */
+    private Map<String, Object> payPlan(Seat seat, Decision d, List<Object> indices) {
+        List<String> steps = new ArrayList<>();
+        for (Object o : indices) {
+            int index;
+            try {
+                index = toInt(o);
+            } catch (RuntimeException ex) {
+                return error("invalid_choice", "pay= takes choice indices: " + o, true);
+            }
+            if (index < 0 || index >= d.backing.size()) {
+                return error("index_out_of_range", "Index " + index + " is out of range (valid: 0-" + (d.backing.size() - 1) + ")", true);
+            }
+            Object backing = d.backing.get(index);
+            if (backing instanceof ManaType type) {
+                steps.add(SeatPlayer.letter(type));
+            } else if (backing instanceof UUID id) {
+                int nth = 0;
+                for (int i = 0; i < index; i++) {
+                    if (id.equals(d.backing.get(i))) {
+                        nth++;
+                    }
+                }
+                steps.add(views.shortId(id) + "." + nth);
+            } else {
+                return error("invalid_choice", "choice " + index + " is not a mana source or floating mana", true);
+            }
+        }
+        if (steps.isEmpty()) {
+            return error("invalid_choice", "pay= needs at least one source", true);
+        }
+        respondString(seat, "plan:" + String.join(",", steps));
+        return null;
     }
 
     /** The trigger a trigger-order answer (index or short id) stands for; null when it isn't one. */
