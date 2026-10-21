@@ -7,6 +7,7 @@ import mage.constants.Zone;
 import mage.counters.CounterType;
 import mage.game.Game;
 import mage.game.permanent.Permanent;
+import mage.game.permanent.PermanentToken;
 import mage.player.ai.score.GameStateEvaluator2;
 import mage.players.PlayableObjectsList;
 import mage.players.Player;
@@ -101,6 +102,17 @@ public class PossibleTargetsComparator {
             getScoreFromBattlefield(o1)
     );
 
+    /**
+     * A card before a token of the same score: a token copy scores exactly as the card it copies, and the
+     * legend rule (keep one, Outcome.Benefit) otherwise kept whichever came first by random id -- often the
+     * copy that Flamerush Rider or Kiki-Jiki exiles at end of turn. A card can be returned to hand, recast
+     * and recurred; a token can't, so between equals the card is the one worth more.
+     */
+    private final Comparator<MageItem> BY_CARD_BEFORE_TOKEN = (o1, o2) -> Boolean.compare(
+            o1 instanceof PermanentToken,
+            o2 instanceof PermanentToken
+    );
+
     private final Comparator<MageItem> BY_PLAYABLE = (o1, o2) -> Boolean.compare(
             this.playableItems.containsObject(o2.getId()),
             this.playableItems.containsObject(o1.getId())
@@ -138,6 +150,7 @@ public class PossibleTargetsComparator {
      */
     public final Comparator<MageItem> ANY_MOST_VALUABLE_FIRST = BY_TYPES
             .thenComparing(BY_BIGGER_SCORE)
+            .thenComparing(BY_CARD_BEFORE_TOKEN)
             .thenComparing(BY_NAME)
             .thenComparing(BY_ID);
     public final Comparator<MageItem> ANY_MOST_VALUABLE_LAST = ANY_MOST_VALUABLE_FIRST.reversed();

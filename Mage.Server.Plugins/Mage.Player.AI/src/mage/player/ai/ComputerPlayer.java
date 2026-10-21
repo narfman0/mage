@@ -15,6 +15,7 @@ import mage.cards.repository.CardCriteria;
 import mage.cards.repository.CardInfo;
 import mage.cards.repository.CardRepository;
 import mage.choices.Choice;
+import mage.choices.ChoiceCreatureType;
 import mage.constants.*;
 import mage.filter.common.FilterLandCard;
 import mage.game.Game;
@@ -797,7 +798,8 @@ public class ComputerPlayer extends PlayerImpl {
 
         // choose creature type
         // TODO: WTF?! Creature types dialog text can changes, need to replace that code
-        if (choice.getMessage() != null && (choice.getMessage().equals("Choose creature type") || choice.getMessage().equals("Choose a creature type"))) {
+        if (choice instanceof ChoiceCreatureType
+                || (choice.getMessage() != null && (choice.getMessage().equals("Choose creature type") || choice.getMessage().equals("Choose a creature type")))) {
             if (chooseCreatureType(outcome, choice, game)) {
                 return true;
             }
@@ -843,60 +845,83 @@ public class ComputerPlayer extends PlayerImpl {
         return true;
     }
 
+    /**
+     * A creature type for a "choose a creature type" choice: the type that counts most where the outcome lands.
+     * For a good outcome (a tribe to pump, draw for, cast or name with Cavern of Souls) that is the AI's own
+     * creatures -- battlefield, hand, library; for a bad one (Engineered Plague) its opponents' creatures less
+     * its own. Changelings are every type, so they don't vote. A tie goes to the type printed first on more of
+     * those cards (an Elf Druid is an Elf first), then to the first name, so every simulation of the same board
+     * picks the same type. ChoiceCreatureType offers its types as keys (key mode), so the
+     * offer is read and answered by key; a caller still in string mode is read by string.
+     */
     protected boolean chooseCreatureType(Outcome outcome, Choice choice, Game game) {
-        if (outcome == Outcome.Detriment) {
-            // choose a creature type of opponent on battlefield or graveyard
-            for (Permanent permanent : game.getBattlefield().getActivePermanents(this.getId(), game)) {
-                if (game.getOpponents(getId(), true).contains(permanent.getControllerId())
-                        && permanent.getCardType(game).contains(CardType.CREATURE)
-                        && !permanent.getSubtype(game).isEmpty()) {
-                    if (choice.getChoices().contains(permanent.getSubtype(game).get(0).toString())) {
-                        choice.setChoice(permanent.getSubtype(game).get(0).toString());
-                        break;
-                    }
-                }
+        Set<String> offered = choice.isKeyChoice() ? choice.getKeyChoices().keySet() : choice.getChoices();
+        if (offered == null || offered.isEmpty()) {
+            return false;
+        }
+        Map<String, Integer> score = new HashMap<>();
+        Map<String, Integer> lead = new HashMap<>();
+        Set<UUID> opponents = game.getOpponents(getId(), true);
+        for (Permanent permanent : game.getBattlefield().getActivePermanents(getId(), game)) {
+            if (getId().equals(permanent.getControllerId())) {
+                countCreatureTypes(score, lead, offered, permanent, game, outcome.isGood() ? 3 : -3);
+            } else if (!outcome.isGood() && opponents.contains(permanent.getControllerId())) {
+                countCreatureTypes(score, lead, offered, permanent, game, 3);
             }
-            // or in opponent graveyard
-            if (!choice.isChosen()) {
-                for (UUID opponentId : game.getOpponents(getId(), true)) {
-                    Player opponent = game.getPlayer(opponentId);
-                    for (Card card : opponent.getGraveyard().getCards(game)) {
-                        if (card != null && card.getCardType(game).contains(CardType.CREATURE) && !card.getSubtype(game).isEmpty()) {
-                            if (choice.getChoices().contains(card.getSubtype(game).get(0).toString())) {
-                                choice.setChoice(card.getSubtype(game).get(0).toString());
-                                break;
-                            }
-                        }
-                    }
-                    if (choice.isChosen()) {
-                        break;
-                    }
-                }
+        }
+        if (outcome.isGood()) {
+            for (Card card : getHand().getCards(game)) {
+                countCreatureTypes(score, lead, offered, card, game, 2);
+            }
+            for (Card card : getLibrary().getCards(game)) {
+                countCreatureTypes(score, lead, offered, card, game, 1);
             }
         } else {
-            // choose a creature type of hand or library
-            for (UUID cardId : this.getHand()) {
-                Card card = game.getCard(cardId);
-                if (card != null && card.getCardType(game).contains(CardType.CREATURE) && !card.getSubtype(game).isEmpty()) {
-                    if (choice.getChoices().contains(card.getSubtype(game).get(0).toString())) {
-                        choice.setChoice(card.getSubtype(game).get(0).toString());
-                        break;
-                    }
-                }
-            }
-            if (!choice.isChosen()) {
-                for (UUID cardId : this.getLibrary().getCardList()) {
-                    Card card = game.getCard(cardId);
-                    if (card != null && card.getCardType(game).contains(CardType.CREATURE) && !card.getSubtype(game).isEmpty()) {
-                        if (choice.getChoices().contains(card.getSubtype(game).get(0).toString())) {
-                            choice.setChoice(card.getSubtype(game).get(0).toString());
-                            break;
-                        }
+            for (UUID opponentId : opponents) {
+                Player opponent = game.getPlayer(opponentId);
+                if (opponent != null) {
+                    for (Card card : opponent.getGraveyard().getCards(game)) {
+                        countCreatureTypes(score, lead, offered, card, game, 1);
                     }
                 }
             }
         }
+        String best = null;
+        Comparator<String> better = Comparator.<String>comparingInt(score::get)
+                .thenComparingInt(type -> lead.getOrDefault(type, 0))
+                .thenComparing(Comparator.<String>reverseOrder());
+        for (String type : score.keySet()) {
+            if (score.get(type) > 0 && (best == null || better.compare(type, best) > 0)) {
+                best = type;
+            }
+        }
+        if (best == null) {
+            return false;
+        }
+        if (choice.isKeyChoice()) {
+            choice.setChoiceByKey(best, false);
+        } else {
+            choice.setChoice(best, false);
+        }
         return choice.isChosen();
+    }
+
+    private static void countCreatureTypes(Map<String, Integer> score, Map<String, Integer> lead, Set<String> offered,
+                                           MageObject object, Game game, int weight) {
+        if (object == null || !object.isCreature(game) || object.isAllCreatureTypes(game)) {
+            return;
+        }
+        boolean first = true;
+        for (SubType subType : object.getSubtype(game)) {
+            String name = subType.toString();
+            if (offered.contains(name)) {
+                score.merge(name, weight, Integer::sum);
+                if (first) {
+                    lead.merge(name, Math.abs(weight), Integer::sum);
+                }
+            }
+            first = false;
+        }
     }
 
     @Override
