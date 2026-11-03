@@ -22,6 +22,7 @@ import mage.game.Game;
 import mage.game.draft.Draft;
 import mage.game.match.Match;
 import mage.game.permanent.Permanent;
+import mage.game.stack.StackObject;
 import mage.game.tournament.Tournament;
 import mage.players.ManaPoolItem;
 import mage.players.Player;
@@ -187,10 +188,30 @@ public class ComputerPlayer extends PlayerImpl {
             if (target.isChosen(game)) {
                 break;
             }
+            if (isOwnStackObjectForBadEffect(outcome, item, abilityControllerId, source, game)) {
+                continue;
+            }
             targetAdder.accept(item);
         }
 
         return target.isChosen(game) && !target.getTargets().isEmpty();
+    }
+
+    /**
+     * A bad effect (counter, bounce, tap, damage) never falls back to the AI's own
+     * spell or ability on the stack: no spell beats countering its own. With nothing
+     * else to choose the choice fails, which keeps a copy's original target (rule
+     * 706.10c lets "may choose new targets" leave it) and makes a spell with no
+     * other target uncastable. A mandatory triggered ability still has to take it.
+     */
+    private static boolean isOwnStackObjectForBadEffect(Outcome outcome, MageItem item, UUID abilityControllerId, Ability source, Game game) {
+        if (outcome.isGood() || source instanceof TriggeredAbility) {
+            return false;
+        }
+        StackObject stackObject = game.getStack().getStackObject(item.getId());
+        return stackObject != null
+                && stackObject.getId().equals(item.getId())
+                && abilityControllerId.equals(stackObject.getControllerId());
     }
 
     /**

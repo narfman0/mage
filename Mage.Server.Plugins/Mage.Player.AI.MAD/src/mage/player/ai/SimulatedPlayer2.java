@@ -15,6 +15,7 @@ import mage.game.events.GameEvent;
 import mage.game.match.MatchPlayer;
 import mage.game.permanent.Permanent;
 import mage.game.stack.StackAbility;
+import mage.game.stack.StackObject;
 import mage.players.Player;
 import mage.players.net.UserData;
 import mage.target.Target;
@@ -212,12 +213,19 @@ public final class SimulatedPlayer2 extends ComputerPlayer {
         }
 
         if (bad) {
-            // remove its own creatures, player itself for bad effects with one target
+            // remove its own creatures, its own spells and abilities, player itself for bad effects with one target
             while (iterator.hasNext()) {
                 Ability ability1 = iterator.next();
                 if (ability1.getTargets().size() == 1 && ability1.getTargets().get(0).getTargets().size() == 1) {
                     Permanent permanent = game.getPermanent(ability1.getFirstTarget());
                     if (permanent != null && !game.getOpponents(playerId, true).contains(permanent.getControllerId())) {
+                        iterator.remove();
+                        continue;
+                    }
+                    // a spell is not a permanent: countering its own is never an option
+                    StackObject stackObject = game.getStack().getStackObject(ability1.getFirstTarget());
+                    if (stackObject != null && stackObject.getId().equals(ability1.getFirstTarget())
+                            && playerId.equals(stackObject.getControllerId())) {
                         iterator.remove();
                         continue;
                     }
