@@ -111,7 +111,7 @@ public final class DecisionRenderer {
         if (!revealed.isEmpty()) {
             r.put("revealed", revealed);
         }
-        List<Map<String, Object>> lookedAt = views.lookedAt(view, game);
+        List<Map<String, Object>> lookedAt = views.lookedAt(view, game, player);
         if (!lookedAt.isEmpty()) {
             r.put("looked_at", lookedAt);
         }
