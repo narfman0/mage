@@ -184,4 +184,123 @@ public class AddManaOfAnyTypeProducedTest extends CardTestPlayerBase {
 
     }
 
+
+    /**
+     * A source of any color is asked for its net mana before a color is
+     * chosen, and the bonus mana must be counted for it too: with Kinnan and
+     * an untapped Sylvan Caryatid, a spell that costs {2} is playable.
+     */
+    @Test
+    public void testAnyColorSourceCountsTheBonusAsAvailable() {
+        addCard(Zone.BATTLEFIELD, playerA, kinnan); // Whenever you tap a nonland permanent for mana, add one mana of any type that permanent produced.
+        // {T}: Add one mana of any color.
+        addCard(Zone.BATTLEFIELD, playerA, "Sylvan Caryatid");
+        addCard(Zone.HAND, playerA, "Simic Signet"); // {2}
+
+        checkPlayableAbility("signet with the bonus", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Simic Signet", true);
+        castSpell(1, PhaseStep.PRECOMBAT_MAIN, playerA, "Simic Signet");
+
+        setStopAt(1, PhaseStep.BEGIN_COMBAT);
+        execute();
+
+        assertPermanentCount(playerA, "Simic Signet", 1);
+        assertTapped("Sylvan Caryatid", true);
+    }
+
+    /**
+     * The same for a land: Mana Flare and one City of Brass are two mana.
+     */
+    @Test
+    public void testAnyColorLandCountsTheBonusAsAvailable() {
+        // Whenever a player taps a land for mana, that player adds one mana of any type that land produced.
+        addCard(Zone.BATTLEFIELD, playerA, "Mana Flare");
+        // Whenever City of Brass becomes tapped, it deals 1 damage to you.
+        // {T}: Add one mana of any color.
+        addCard(Zone.BATTLEFIELD, playerA, "City of Brass");
+        addCard(Zone.HAND, playerA, "Simic Signet"); // {2}
+
+        checkPlayableAbility("signet with the bonus", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Simic Signet", true);
+        castSpell(1, PhaseStep.PRECOMBAT_MAIN, playerA, "Simic Signet");
+
+        setStopAt(1, PhaseStep.BEGIN_COMBAT);
+        execute();
+
+        assertPermanentCount(playerA, "Simic Signet", 1);
+        assertTapped("City of Brass", true);
+        assertLife(playerA, 19);
+    }
+
+    /**
+     * A source of {C} or any color (Gemstone Caverns with its luck counter
+     * reads any color only) and a plain colored source keep their bonus: one
+     * Elvish Mystic under Kinnan is {G}{G}, not more and not any color.
+     */
+    @Test
+    public void testColoredSourceStillCountsItsOwnColorOnly() {
+        addCard(Zone.BATTLEFIELD, playerA, kinnan);
+        addCard(Zone.BATTLEFIELD, playerA, "Elvish Mystic"); // {T}: Add {G}.
+        addCard(Zone.HAND, playerA, "Grizzly Bears"); // {1}{G}
+        addCard(Zone.HAND, playerA, "Simic Signet"); // {2}
+        addCard(Zone.HAND, playerA, "Coral Merfolk"); // {1}{U}
+
+        checkPlayableAbility("bears", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Grizzly Bears", true);
+        checkPlayableAbility("signet", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Simic Signet", true);
+        checkPlayableAbility("no blue", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Coral Merfolk", false);
+
+        setStrictChooseMode(true);
+        setStopAt(1, PhaseStep.BEGIN_COMBAT);
+        execute();
+    }
+
+
+    /**
+     * A source whose one ability offers several kinds (Fellwar Stone over an
+     * opponent's Forest and Island: {G} or {U}) is counted with its bonus
+     * too, once: {G}{G} or {U}{U}, so a {2} spell is playable and a {3} spell
+     * is not.
+     */
+    @Test
+    public void testSeveralKindsSourceCountsTheBonusOnce() {
+        addCard(Zone.BATTLEFIELD, playerA, kinnan);
+        // {T}: Add one mana of any color that a land an opponent controls could produce.
+        addCard(Zone.BATTLEFIELD, playerA, "Fellwar Stone");
+        addCard(Zone.BATTLEFIELD, playerB, "Forest");
+        addCard(Zone.BATTLEFIELD, playerB, "Island");
+        addCard(Zone.HAND, playerA, "Simic Signet"); // {2}
+        addCard(Zone.HAND, playerA, "Coral Merfolk"); // {1}{U}
+        addCard(Zone.HAND, playerA, "Trained Armodon"); // {1}{G}{G}
+
+        checkPlayableAbility("signet", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Simic Signet", true);
+        checkPlayableAbility("merfolk", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Coral Merfolk", true);
+        checkPlayableAbility("two mana, not three", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Trained Armodon", false);
+
+        setStrictChooseMode(true);
+        setStopAt(1, PhaseStep.BEGIN_COMBAT);
+        execute();
+    }
+
+    /**
+     * The bonus of one source is never credited to the next: Fellwar Stone
+     * and an Elvish Mystic under Kinnan are four mana, not more.
+     */
+    @Test
+    public void testSeveralKindsSourceLeavesNothingForTheNextSource() {
+        addCard(Zone.BATTLEFIELD, playerA, kinnan);
+        addCard(Zone.BATTLEFIELD, playerA, "Fellwar Stone");
+        addCard(Zone.BATTLEFIELD, playerA, "Elvish Mystic"); // {T}: Add {G}.
+        addCard(Zone.BATTLEFIELD, playerB, "Forest");
+        addCard(Zone.BATTLEFIELD, playerB, "Island");
+        addCard(Zone.HAND, playerA, "Craw Wurm"); // {4}{G}{G}
+        addCard(Zone.HAND, playerA, "Durkwood Boars"); // {4}{G}
+        addCard(Zone.HAND, playerA, "Giant Spider"); // {3}{G}
+
+        checkPlayableAbility("four", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Giant Spider", true);
+        checkPlayableAbility("not five", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Durkwood Boars", false);
+        checkPlayableAbility("not six", 1, PhaseStep.PRECOMBAT_MAIN, playerA, "Cast Craw Wurm", false);
+
+        setStrictChooseMode(true);
+        setStopAt(1, PhaseStep.BEGIN_COMBAT);
+        execute();
+    }
+
 }
