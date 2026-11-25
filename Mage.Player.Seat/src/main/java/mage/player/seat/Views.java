@@ -973,13 +973,41 @@ public final class Views {
         return out;
     }
 
-    public List<Map<String, Object>> lookedAt(GameView gameView, Game game) {
+    /**
+     * What this seat looked at: the looks the seat kept
+     * ({@link SeatPlayer#looks}, oldest first — every look since its last real
+     * answer, from the cards as they were when looked at, wherever they are
+     * now), then any pile the engine's own state still holds that the seat
+     * did not keep. A pile both hold is listed once.
+     */
+    public List<Map<String, Object>> lookedAt(GameView gameView, Game game, SeatPlayer player) {
         List<Map<String, Object>> out = new ArrayList<>();
+        List<SeatPlayer.Look> kept = player == null ? List.of() : player.looks();
+        for (SeatPlayer.Look look : kept) {
+            List<Map<String, Object>> cards = new ArrayList<>();
+            for (int i = 0; i < look.ids().size(); i++) {
+                Map<String, Object> info = cardInfo(look.cards().get(i));
+                info.put("id", shortId(look.ids().get(i)));
+                cards.add(info);
+            }
+            Map<String, Object> pile = new LinkedHashMap<>();
+            pile.put("name", Fmt.stripHtml(look.name()));
+            pile.put("cards", cards);
+            out.add(pile);
+        }
         for (mage.view.LookedAtView l : gameView.getLookedAt()) {
+            List<UUID> ids = new ArrayList<>(l.getCards().keySet());
+            boolean held = false;
+            for (SeatPlayer.Look look : kept) {
+                held |= Objects.equals(look.name(), l.getName()) && look.ids().equals(ids);
+            }
+            if (held) {
+                continue;
+            }
             List<Map<String, Object>> cards = new ArrayList<>();
             // A looked-at pile is ids and printings only (SimpleCardView); the
             // card itself is in the game.
-            for (UUID id : l.getCards().keySet()) {
+            for (UUID id : ids) {
                 Card card = game.getCard(id);
                 if (card == null) {
                     continue;

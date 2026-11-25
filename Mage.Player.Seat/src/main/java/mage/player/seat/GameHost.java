@@ -558,7 +558,10 @@ public final class GameHost {
         int seq = game.nextGameSeq();
         DataCollectorServices.getInstance().onPlayerQuery(game, e, seq);
         if (config.replayFrom() != null && seq <= config.holdThroughSeq()) {
-            return; // the replay feeder answers this one
+            // The replay feeder answers this one, as the seat once did: a look
+            // from before it is not shown again when the replay hands over.
+            seat.player.forgetLooks();
+            return;
         }
         if (answerFromBatch(seat, e)) {
             return;
@@ -883,6 +886,12 @@ public final class GameHost {
                 r.put("ms", waited);
                 r.put("by", writing ? "snapshot" : "lock");
                 perf(r);
+            }
+            if (seat.forgetLooks) {
+                // The seat's own answer: before it wakes the game thread, which
+                // may look again at once, what the seat had looked at goes.
+                seat.forgetLooks = false;
+                seat.player.forgetLooks();
             }
             send.run();
         }
@@ -1216,6 +1225,20 @@ public final class GameHost {
      */
     public Map<String, Object> chooseAction(String seatName, Map<String, Object> args) {
         Seat seat = seat(seatName);
+        synchronized (seat) {
+            // What the seat looked at (fullpod #93) stays on its results through
+            // every `held` answer — nobody was asked, so nobody has seen it —
+            // and goes with the first answer of its own, as that is sent.
+            seat.forgetLooks = !isHeld(args.get("held"));
+            try {
+                return answer(seat, seatName, args);
+            } finally {
+                seat.forgetLooks = false;
+            }
+        }
+    }
+
+    private Map<String, Object> answer(Seat seat, String seatName, Map<String, Object> args) {
         synchronized (seat) {
             Decision d = seat.pending();
             if (d == null) {
@@ -1747,6 +1770,10 @@ public final class GameHost {
         woke(); // aborts a snapshot write in progress
         synchronized (gameLock) {
             game.rollbackTurns(turns);
+        }
+        // What any seat looked at in the turns undone is not shown over the older board.
+        for (Seat s : seatsById.values()) {
+            s.player.forgetLooks();
         }
         seat.clearPending(stale);
         return true;

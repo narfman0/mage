@@ -22,6 +22,7 @@ import mage.abilities.mana.ActivatedManaAbilityImpl;
 import mage.abilities.mana.ManaOptions;
 import mage.cards.Card;
 import mage.cards.CardImpl;
+import mage.cards.Cards;
 import mage.constants.AbilityType;
 import mage.abilities.costs.mana.ActivationManaAbilityStep;
 import mage.constants.ColoredManaSymbol;
@@ -38,6 +39,8 @@ import mage.players.ManaPool;
 import mage.players.ManaPoolItem;
 import mage.players.PlayerImpl;
 import mage.players.net.UserData;
+import mage.util.CardUtil;
+import mage.view.CardView;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -54,6 +57,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * A human seat answered in-process. Everything a HumanPlayer does — the
@@ -161,6 +165,28 @@ public class SeatPlayer extends HumanPlayer {
      */
     private transient volatile List<String> suggestion = List.of();
 
+    /**
+     * One look the seat made ({@code Player.lookAtCards}): the window title
+     * and the cards as they were when looked at. The engine's own copy
+     * ({@code GameState.lookedAt}) is cleared as the look is announced, before
+     * any result is built, so a look that asks nothing (Kinnan's top five
+     * with nothing to take) was never shown (fullpod #93); and the cards have
+     * usually moved by the time a result is built, so the views are made here.
+     */
+    public record Look(String name, List<UUID> ids, List<CardView> cards) {
+    }
+
+    /**
+     * The looks kept for this seat's results, oldest first, until the host
+     * forgets them at the seat's next real answer ({@link #forgetLooks}).
+     * Written on the game thread, read where a result is built (the game
+     * thread, or the host's for a state poll), cleared on the host's. Not part
+     * of the game: a copy (a simulation, a bookmark) starts with none, a
+     * snapshot does not carry them, and a restore leaves the live seat's as
+     * they are.
+     */
+    private transient volatile List<Look> looks = new CopyOnWriteArrayList<>();
+
     private static final ManaType[] POOL_TYPES = {
         ManaType.WHITE, ManaType.BLUE, ManaType.BLACK, ManaType.RED, ManaType.GREEN, ManaType.COLORLESS,
     };
@@ -227,6 +253,71 @@ public class SeatPlayer extends HumanPlayer {
     @Override
     public SeatPlayer copy() {
         return new SeatPlayer(this);
+    }
+
+    private List<Look> looksKept() {
+        List<Look> kept = looks;
+        if (kept == null) {
+            kept = new CopyOnWriteArrayList<>(); // a copy read back from a snapshot
+            looks = kept;
+        }
+        return kept;
+    }
+
+    /** The looks this seat's next result carries, oldest first. */
+    public List<Look> looks() {
+        return List.copyOf(looksKept());
+    }
+
+    /** The seat answered for itself: what it had looked at is no longer shown. */
+    public void forgetLooks() {
+        looksKept().clear();
+    }
+
+    /**
+     * Keeps a look for the seat's results. A simulation's or a playability
+     * check's look is nobody's: only the real game's is kept. A look under a
+     * title already kept with the same cards is the same pile (an effect that
+     * looks again as it asks), not a second one.
+     */
+    private void keepLook(String name, List<Card> cards, boolean addToPile, Game game) {
+        if (game == null || game.isSimulation() || game.inCheckPlayableState() || cards.isEmpty()) {
+            return;
+        }
+        List<Look> kept = looksKept();
+        List<UUID> ids = new ArrayList<>();
+        List<CardView> views = new ArrayList<>();
+        Look last = kept.isEmpty() ? null : kept.get(kept.size() - 1);
+        if (addToPile && last != null && Objects.equals(last.name(), name)) {
+            // The one-card overload adds to the pile of that title (LookedAt.add).
+            ids.addAll(last.ids());
+            views.addAll(last.cards());
+            kept.remove(kept.size() - 1);
+        }
+        for (Card card : cards) {
+            if (card != null && !ids.contains(card.getId())) {
+                ids.add(card.getId());
+                views.add(new CardView(card, game));
+            }
+        }
+        kept.removeIf(look -> Objects.equals(look.name(), name) && look.ids().equals(ids));
+        kept.add(new Look(name, List.copyOf(ids), List.copyOf(views)));
+    }
+
+    @Override
+    public void lookAtCards(String titleSuffix, Card card, Game game) {
+        if (card != null) {
+            keepLook(titleSuffix, List.of(card), true, game);
+        }
+        super.lookAtCards(titleSuffix, card, game);
+    }
+
+    @Override
+    public void lookAtCards(Ability source, String titleSuffix, Cards cards, Game game) {
+        if (cards != null) {
+            keepLook(CardUtil.createObjectRelatedWindowTitle(source, game, titleSuffix), new ArrayList<>(cards.getCards(game)), false, game);
+        }
+        super.lookAtCards(source, titleSuffix, cards, game);
     }
 
     public void setAutoPay(boolean autoPay) {

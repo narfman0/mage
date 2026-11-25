@@ -39,6 +39,14 @@ final class Seat {
     volatile boolean offerManaSources;
     /** The seat conceded: it is asked nothing more, and every result says so. */
     volatile boolean conceded;
+    /**
+     * The answer being given is the seat's own (not a {@code held} pass the
+     * server gave for it): what the seat had looked at is forgotten as that
+     * answer is sent ({@code GameHost.answering}), before the game thread can
+     * look again. Set and cleared by {@code chooseAction}.
+     */
+    volatile boolean forgetLooks;
+
     private Decision pending;
     private final List<String> chat = new ArrayList<>();
 
