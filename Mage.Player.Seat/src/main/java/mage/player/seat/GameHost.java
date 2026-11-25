@@ -547,6 +547,9 @@ public final class GameHost {
         switch (e.getQueryType()) {
             case PERSONAL_MESSAGE -> {
                 seat.say("[System] " + Fmt.stripHtml(e.getMessage()));
+                if (seat.picked != null) {
+                    seat.toldSincePick.add(e.getMessage());
+                }
                 return;
             }
             case TOURNAMENT_CONSTRUCT, DRAFT_PICK_CARD -> {
@@ -557,6 +560,8 @@ public final class GameHost {
         }
         int seq = game.nextGameSeq();
         DataCollectorServices.getInstance().onPlayerQuery(game, e, seq);
+        Seat.Pick picked = seat.picked;
+        seat.picked = null;
         if (config.replayFrom() != null && seq <= config.holdThroughSeq()) {
             // The replay feeder answers this one, as the seat once did: a look
             // from before it is not shown again when the replay hands over.
@@ -570,7 +575,12 @@ public final class GameHost {
             return; // nobody will answer it: the seat has left (the engine's own abort ends the wait)
         }
         try {
-            seat.deliver(renderer.render(game, seat.player, e, seq, seat.offerManaSources));
+            Decision d = renderer.render(game, seat.player, e, seq, seat.offerManaSources);
+            String note = refusal(seat, picked, d);
+            if (note != null) {
+                d.result.put("note", note);
+            }
+            seat.deliver(d);
         } catch (RuntimeException ex) {
             LOG.error("rendering " + e.getQueryType() + " for " + seat.key, ex);
             Map<String, Object> r = new LinkedHashMap<>();
@@ -583,6 +593,58 @@ public final class GameHost {
             seat.deliver(new Decision(seq, e, r, List.of()));
         }
         maybeSnapshot(e);
+    }
+
+    private static final java.util.regex.Pattern REFUSAL = java.util.regex.Pattern.compile("^.+? \\[[0-9a-f]{3}\\]: .+$");
+
+    /**
+     * Why the target the seat just picked was not taken, when the engine asks
+     * the same target question again (fullpod #94): a rule-modifying effect
+     * refused it (Ground Seal over a graveyard card; a permanent or a player
+     * so protected is never offered), XMage wrote "Ground Seal [d74]: Cards in graveyards can't be
+     * the targets of spells or abilities." to the game log — or to the player
+     * alone, for an effect built that way — and HumanPlayer went round its
+     * loop. The re-asked result carries that line as its {@code note}, the
+     * object ref dropped. Only when all of it holds: the question is a target
+     * question with the message of the one answered, still offers the pick,
+     * has not taken it, and the engine's own check of that pick against the
+     * rule-modifying effects ({@link SeatPlayer#targetRefused}) says refused.
+     * Null otherwise, and for every later question.
+     */
+    private String refusal(Seat seat, Seat.Pick picked, Decision d) {
+        if (picked == null) {
+            return null;
+        }
+        List<String> lines = new ArrayList<>();
+        synchronized (logLines) {
+            if (picked.logMark() <= logLines.size()) {
+                lines.addAll(logLines.subList(picked.logMark(), logLines.size()));
+            }
+        }
+        synchronized (seat.toldSincePick) {
+            lines.addAll(seat.toldSincePick);
+            seat.toldSincePick.clear();
+        }
+        if (lines.isEmpty() || d.event.getQueryType() != PlayerQueryEvent.QueryType.PICK_TARGET
+                || !"GAME_TARGET".equals(d.actionType())
+                || !picked.message().equals(String.valueOf(d.result.get("message")))
+                || !d.backing.contains(picked.id())) {
+            return null;
+        }
+        Object chosen = d.event.getOptions() == null ? null : d.event.getOptions().get("chosenTargets");
+        if (chosen instanceof java.util.Collection<?> ids && ids.contains(picked.id())) {
+            return null;
+        }
+        if (!seat.player.targetRefused(picked.id(), game)) {
+            return null;
+        }
+        for (String line : lines) {
+            // "<source's id name>: <the effect's text>", as ContinuousEffects writes it.
+            if (REFUSAL.matcher(line.replaceAll("<[^>]+>", "").trim()).matches()) {
+                return Fmt.stripHtml(line).trim();
+            }
+        }
+        return null;
     }
 
     /**
@@ -1543,6 +1605,11 @@ public final class GameHost {
             return error("invalid_choice", "'" + choice + "' is not one of the current choices", true);
         }
         if (backing instanceof UUID id) {
+            if ("GAME_TARGET".equals(type) && d.event.getQueryType() == PlayerQueryEvent.QueryType.PICK_TARGET) {
+                // Before the answer wakes the game thread: a refusal is logged at once.
+                seat.toldSincePick.clear();
+                seat.picked = new Seat.Pick(id, String.valueOf(d.result.get("message")), logLines.size());
+            }
             respondUuid(seat, id);
         } else if (backing instanceof ManaType manaType) {
             respondManaType(seat, manaType);
