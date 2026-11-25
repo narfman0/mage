@@ -98,10 +98,17 @@ public class ManaOptions extends LinkedHashSet<Mana> {
         List<Mana> copy = new ArrayList<>(this);
         this.clear();
         for (Mana netMana : netManas) {
-            for (Mana mana : copy) {
-                if (!ability.hasTapCost() || checkManaReplacementAndTriggeredMana(ability, game, netMana)) {
+            // One tap per kind the ability can make, and the mana its tap
+            // triggers (Kinnan, Mana Flare) added to that kind: asked once per
+            // existing option the triggered mana was never read, so the bonus
+            // was missing here and credited to the next source instead.
+            if (ability.hasTapCost() && !checkManaReplacementAndTriggeredMana(ability, game, netMana)) {
+                continue;
+            }
+            for (Mana triggeredManaVariation : getTriggeredManaVariations(game, ability, netMana)) {
+                for (Mana mana : copy) {
                     newMana = mana.copy();
-                    newMana.add(netMana);
+                    newMana.add(triggeredManaVariation);
                     this.add(newMana);
                 }
             }

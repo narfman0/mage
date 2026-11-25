@@ -41,20 +41,28 @@ public class AddManaOfAnyTypeProducedEffect extends ManaEffect {
         if (types == null) {
             return netMana;
         }
-        if (types.getBlack() > 0) {
-            netMana.add(Mana.BlackMana(1));
-        }
-        if (types.getRed() > 0) {
-            netMana.add(Mana.RedMana(1));
-        }
-        if (types.getBlue() > 0) {
-            netMana.add(Mana.BlueMana(1));
-        }
-        if (types.getGreen() > 0) {
-            netMana.add(Mana.GreenMana(1));
-        }
-        if (types.getWhite() > 0) {
-            netMana.add(Mana.WhiteMana(1));
+        if (types.getAny() > 0) {
+            // A source of any color (Sylvan Caryatid, Command Tower) is asked for
+            // its net mana before a color is chosen: the bonus is any color too.
+            // Without this the bonus was missing from the available mana, and a
+            // spell that needed it was not playable.
+            netMana.add(Mana.AnyMana(1));
+        } else {
+            if (types.getBlack() > 0) {
+                netMana.add(Mana.BlackMana(1));
+            }
+            if (types.getRed() > 0) {
+                netMana.add(Mana.RedMana(1));
+            }
+            if (types.getBlue() > 0) {
+                netMana.add(Mana.BlueMana(1));
+            }
+            if (types.getGreen() > 0) {
+                netMana.add(Mana.GreenMana(1));
+            }
+            if (types.getWhite() > 0) {
+                netMana.add(Mana.WhiteMana(1));
+            }
         }
         if (types.getColorless() > 0) {
             netMana.add(Mana.ColorlessMana(1));
