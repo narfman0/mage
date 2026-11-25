@@ -27,11 +27,13 @@ import mage.constants.AbilityType;
 import mage.abilities.costs.mana.ActivationManaAbilityStep;
 import mage.constants.ColoredManaSymbol;
 import mage.constants.ManaType;
+import mage.constants.Outcome;
 import mage.constants.PlayerAction;
 import mage.game.stack.Spell;
 import mage.constants.RangeOfInfluence;
 import mage.constants.Zone;
 import mage.game.Game;
+import mage.game.events.GameEvent;
 import mage.game.permanent.Permanent;
 import mage.player.human.HumanPlayer;
 import mage.player.human.PlayerResponse;
@@ -39,6 +41,9 @@ import mage.players.ManaPool;
 import mage.players.ManaPoolItem;
 import mage.players.PlayerImpl;
 import mage.players.net.UserData;
+import mage.target.Target;
+import mage.target.TargetAmount;
+import mage.target.TargetCard;
 import mage.util.CardUtil;
 import mage.view.CardView;
 
@@ -58,6 +63,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BooleanSupplier;
 
 /**
  * A human seat answered in-process. Everything a HumanPlayer does — the
@@ -186,6 +192,14 @@ public class SeatPlayer extends HumanPlayer {
      * they are.
      */
     private transient volatile List<Look> looks = new CopyOnWriteArrayList<>();
+
+    /**
+     * The ability the target question now being asked is for
+     * ({@code chooseTarget}), so a pick the engine refuses can be checked
+     * against the board's rule-modifying effects ({@link #targetRefused}).
+     * Game thread only; null outside a target question.
+     */
+    private transient Ability targetSource;
 
     private static final ManaType[] POOL_TYPES = {
         ManaType.WHITE, ManaType.BLUE, ManaType.BLACK, ManaType.RED, ManaType.GREEN, ManaType.COLORLESS,
@@ -318,6 +332,49 @@ public class SeatPlayer extends HumanPlayer {
             keepLook(CardUtil.createObjectRelatedWindowTitle(source, game, titleSuffix), new ArrayList<>(cards.getCards(game)), false, game);
         }
         super.lookAtCards(source, titleSuffix, cards, game);
+    }
+
+    @Override
+    public boolean chooseTarget(Outcome outcome, Target target, Ability source, Game game) {
+        return askingFor(source, () -> super.chooseTarget(outcome, target, source, game));
+    }
+
+    @Override
+    public boolean chooseTarget(Outcome outcome, Cards cards, TargetCard target, Ability source, Game game) {
+        return askingFor(source, () -> super.chooseTarget(outcome, cards, target, source, game));
+    }
+
+    @Override
+    public boolean chooseTargetAmount(Outcome outcome, TargetAmount target, Ability source, Game game) {
+        return askingFor(source, () -> super.chooseTargetAmount(outcome, target, source, game));
+    }
+
+    private boolean askingFor(Ability source, BooleanSupplier ask) {
+        Ability before = targetSource;
+        targetSource = source;
+        try {
+            return ask.getAsBoolean();
+        } finally {
+            targetSource = before;
+        }
+    }
+
+    /**
+     * Whether a rule-modifying effect on the board (Ground Seal, any "can't
+     * be the target" static) stops {@code id} from being
+     * a target of the ability now asking: the engine's own check of the
+     * TARGET event ({@code TargetImpl.addTarget}), made silently. The engine
+     * logs its reason when it refuses the pick and asks the same question
+     * again; this is how the host knows that line is why (fullpod #94). Game
+     * thread only, from inside the question's re-ask.
+     */
+    boolean targetRefused(UUID id, Game game) {
+        Ability source = targetSource;
+        if (source == null || id == null || game.isSimulation() || game.inCheckPlayableState()) {
+            return false;
+        }
+        return game.getContinuousEffects().preventedByRuleModification(
+                GameEvent.getEvent(GameEvent.EventType.TARGET, id, source, source.getControllerId()), source, game, true);
     }
 
     public void setAutoPay(boolean autoPay) {

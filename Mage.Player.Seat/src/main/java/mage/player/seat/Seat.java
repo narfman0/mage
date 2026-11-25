@@ -47,6 +47,18 @@ final class Seat {
      */
     volatile boolean forgetLooks;
 
+    /**
+     * The target the seat last picked, the question it answered and where
+     * the game log stood: if the engine asks the same question again without
+     * taking the pick, the lines since say why ({@code GameHost.refusal}).
+     * Null once the next question has been asked.
+     */
+    record Pick(UUID id, String message, int logMark) {
+    }
+
+    volatile Pick picked;
+    /** What the engine told this seat alone since {@link #picked} was set. */
+    final List<String> toldSincePick = java.util.Collections.synchronizedList(new ArrayList<>());
     private Decision pending;
     private final List<String> chat = new ArrayList<>();
 
