@@ -19,13 +19,15 @@ import java.util.Set;
 
 /**
  * Convoke through the seat: the mana prompt offers the engine's special
- * action ("Convoke"), answering it asks which creature to tap, and the
+ * action ("Convoke"), answering it asks which creatures to tap, and the
  * prompt comes back for what is still owed. The engine's order is sources
  * first (a mana ability can't pay once a special payment has been used on
  * the spell), and the prompt says so. Siege Wurm ({5}{G}{G}) with four Bears
  * and three Forests: a person's seat (mana sources offered) is asked rather
- * than paid from the Forests; three Forests, then four convokes, and the
- * Wurm resolves with every Bear tapped.
+ * than paid from the Forests; three Forests, then two convokes of two Bears
+ * each (one Convoke taps several creatures since XMage 1.4.63, and is
+ * offered again for what is still owed), and the Wurm resolves with every
+ * Bear tapped.
  */
 public class SpecialManaActionTest {
 
@@ -66,6 +68,7 @@ public class SpecialManaActionTest {
         int convokes = 0;
         int manaPrompts = 0;
         List<String> prompts = new ArrayList<>();
+        List<String> targetPrompts = new ArrayList<>();
         try {
             boolean cast = false;
             for (int i = 0; i < 80; i++) {
@@ -102,8 +105,25 @@ public class SpecialManaActionTest {
                         args = Map.of("choice", "special");
                     }
                 } else if ("GAME_TARGET".equals(type) && cast) {
+                    // One Convoke taps several creatures (XMage 1.4.63): a several-targets
+                    // prompt, a pick a round, Done once one is picked. Two Bears, Done;
+                    // the second Convoke takes the other two and ends at its last pick.
+                    // Done before the maximum is asked for twice (the engine's target
+                    // loop, fullpod issue #95), so a repeated round is counted once.
                     Assert.assertTrue("the convoke target prompt: " + message, message.toLowerCase().contains("convoke"));
-                    args = Map.of("choice", "0");
+                    List<Map<String, Object>> choices = ScriptedSeat.choices(d);
+                    long chosen = choices.stream().filter(c -> Boolean.TRUE.equals(c.get("chosen"))).count();
+                    String round = convokes + ":" + chosen + "/" + choices.size();
+                    if (targetPrompts.isEmpty() || !targetPrompts.get(targetPrompts.size() - 1).equals(round)) {
+                        targetPrompts.add(round);
+                    }
+                    if (convokes == 1 && chosen == 2) {
+                        Assert.assertEquals("Done", d.get("done_text"));
+                        args = Map.of("choice", "no");
+                    } else {
+                        Map<String, Object> fresh = choices.stream().filter(c -> !Boolean.TRUE.equals(c.get("chosen"))).findFirst().orElseThrow();
+                        args = Map.of("choice", String.valueOf(fresh.get("id")));
+                    }
                 } else if ("GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null && castIndex(d) != null) {
                     cast = true;
                     args = Map.of("choice", castIndex(d));
@@ -123,8 +143,10 @@ public class SpecialManaActionTest {
                     }
                     Assert.assertTrue("Siege Wurm resolved: " + board, wurm || d.get("stack") != null);
                     Assert.assertEquals("four Bears convoked: " + tapped, 4, tapped.stream().filter(t -> t.startsWith("Grizzly Bears")).count());
-                    Assert.assertEquals("four convokes: " + prompts, 4, convokes);
-                    Assert.assertEquals("three Forests through the prompt, then four convokes: " + prompts, 7, manaPrompts);
+                    Assert.assertEquals("two convokes: " + prompts, 2, convokes);
+                    Assert.assertEquals("three Forests through the prompt, then two convokes: " + prompts, 5, manaPrompts);
+                    Assert.assertEquals("two Bears and Done, then the other two: " + targetPrompts, List.of("1:0/4", "1:1/4", "1:2/4", "2:0/2", "2:1/2"), targetPrompts);
+                    Assert.assertTrue("two Bears paid {2} of the {4}: " + prompts, prompts.get(4).startsWith("Pay {2}"));
                     Assert.assertTrue("the first prompt asks for the whole cost: " + prompts, prompts.get(0).startsWith("Pay {5}{G}{G}"));
                     Assert.assertTrue("after the Forests, {4} is left for the Bears: " + prompts, prompts.get(3).startsWith("Pay {4}"));
                     return;
