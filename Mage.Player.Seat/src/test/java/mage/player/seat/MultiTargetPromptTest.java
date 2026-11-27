@@ -97,6 +97,21 @@ public class MultiTargetPromptTest {
                     }
                     Map<String, Object> answer = host.chooseAction("You", Map.of("choice", "no"));
                     Assert.assertTrue("Done rejected: " + answer, Boolean.TRUE.equals(answer.get("success")));
+                    // Done is said once (fullpod #95): the engine's target loop
+                    // calls the player again after a Done short of the maximum,
+                    // and the seat does not put that second call to the person.
+                    Map<String, Object> next = host.awaitDecision("You", 120_000);
+                    Assert.assertNotEquals("Done asked for twice: " + next, "GAME_TARGET", String.valueOf(next.get("action_type")));
+                    Map<String, Object> board = GameHostTest.board(next);
+                    long tapped = 0;
+                    for (Object o : (List<?>) board.get("battlefield")) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> perm = (Map<String, Object>) o;
+                        if ("Grizzly Bears".equals(perm.get("name")) && Boolean.TRUE.equals(perm.get("tapped"))) {
+                            tapped++;
+                        }
+                    }
+                    Assert.assertTrue("Frost Breath is cast at the one Bear picked: " + next, next.get("stack") != null || tapped == 1);
                     return;
                 } else if ("GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null && castIndex(d) != null) {
                     cast = true;

@@ -108,15 +108,11 @@ public class SpecialManaActionTest {
                     // One Convoke taps several creatures (XMage 1.4.63): a several-targets
                     // prompt, a pick a round, Done once one is picked. Two Bears, Done;
                     // the second Convoke takes the other two and ends at its last pick.
-                    // Done before the maximum is asked for twice (the engine's target
-                    // loop, fullpod issue #95), so a repeated round is counted once.
+                    // Done is said once (fullpod #95).
                     Assert.assertTrue("the convoke target prompt: " + message, message.toLowerCase().contains("convoke"));
                     List<Map<String, Object>> choices = ScriptedSeat.choices(d);
                     long chosen = choices.stream().filter(c -> Boolean.TRUE.equals(c.get("chosen"))).count();
-                    String round = convokes + ":" + chosen + "/" + choices.size();
-                    if (targetPrompts.isEmpty() || !targetPrompts.get(targetPrompts.size() - 1).equals(round)) {
-                        targetPrompts.add(round);
-                    }
+                    targetPrompts.add(convokes + ":" + chosen + "/" + choices.size());
                     if (convokes == 1 && chosen == 2) {
                         Assert.assertEquals("Done", d.get("done_text"));
                         args = Map.of("choice", "no");
@@ -259,6 +255,86 @@ public class SpecialManaActionTest {
                 Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
             }
             throw new AssertionError("never got past the payment: " + prompts);
+        } finally {
+            host.end();
+        }
+    }
+
+    /**
+     * A partial delve: three of the seven graveyard cards, then Done. Done is
+     * said once (fullpod #95) — the cost's pick goes through the engine's
+     * choose loop, which calls the player again after a Done short of the
+     * maximum — and the mana prompt comes back for the {4} still owed.
+     */
+    @Test(timeout = 240_000)
+    public void aPartialDelveIsDoneOnce() throws Exception {
+        GameHost host = new GameHost(new GameHost.Config("delve-partial", "duel", 5L, null,
+                List.of(new GameHost.SeatSpec("You", "seat", GameHostTest.BEARS, 0), new GameHost.SeatSpec("CPU", "cpu", FILLER, 6)), true));
+        Game game = host.game();
+        Player you = null;
+        for (Player p : game.getPlayers().values()) {
+            if ("You".equals(p.getName())) {
+                you = p;
+            }
+        }
+        Assert.assertNotNull(you);
+        List<PutToBattlefieldInfo> perms = List.of(new PutToBattlefieldInfo(card("Island"), false));
+        List<Card> library = new ArrayList<>();
+        List<Card> graveyard = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            library.add(card("Colossal Dreadmaw"));
+            graveyard.add(card("Grizzly Bears"));
+        }
+        game.cheat(you.getId(), library, List.of(card("Treasure Cruise")), perms, graveyard, List.of(), List.of());
+        host.start();
+        List<String> seen = new ArrayList<>();
+        try {
+            boolean cast = false;
+            boolean done = false;
+            for (int i = 0; i < 80; i++) {
+                Map<String, Object> d = host.awaitDecision("You", 120_000);
+                Assert.assertFalse("game over too soon: " + d, Boolean.TRUE.equals(d.get("game_over")));
+                Assert.assertNull("render error", d.get("error"));
+                String type = String.valueOf(d.get("action_type"));
+                String message = String.valueOf(d.get("message"));
+                Map<String, Object> args;
+                if (done) {
+                    seen.add(type + " " + message);
+                    Assert.assertEquals("after Done the payment asks for the rest, not the pick again: " + seen, "GAME_PLAY_MANA", type);
+                    Assert.assertTrue("three cards paid {3} of the {7}: " + message, message.startsWith("Pay {4}"));
+                    return;
+                } else if ("GAME_TARGET".equals(type) && message.contains("starting player")) {
+                    args = Map.of("choice", indexOfYou(d));
+                } else if ("GAME_PLAY_MANA".equals(type)) {
+                    Map<String, Object> land = null;
+                    for (Map<String, Object> c : ScriptedSeat.choices(d)) {
+                        if ("tap_source".equals(c.get("choice_type")) && land == null) {
+                            land = c;
+                        }
+                    }
+                    args = land != null ? Map.of("choice", String.valueOf(land.get("index"))) : Map.of("choice", "special");
+                } else if ("GAME_TARGET".equals(type) && cast) {
+                    List<Map<String, Object>> choices = ScriptedSeat.choices(d);
+                    long chosen = choices.stream().filter(c -> Boolean.TRUE.equals(c.get("chosen"))).count();
+                    seen.add("pick " + chosen);
+                    if (chosen == 3) {
+                        Assert.assertEquals("Done", d.get("done_text"));
+                        done = true;
+                        args = Map.of("choice", "no");
+                    } else {
+                        Map<String, Object> fresh = choices.stream().filter(c -> !Boolean.TRUE.equals(c.get("chosen"))).findFirst().orElseThrow();
+                        args = Map.of("choice", String.valueOf(fresh.get("id")));
+                    }
+                } else if ("GAME_SELECT".equals(type) && "select".equals(d.get("response_type")) && d.get("combat_phase") == null && castIndex(d, "Treasure Cruise") != null) {
+                    cast = true;
+                    args = Map.of("choice", castIndex(d, "Treasure Cruise"));
+                } else {
+                    args = Map.of("choice", "no");
+                }
+                Map<String, Object> answer = host.chooseAction("You", args);
+                Assert.assertTrue("answer rejected: " + answer + " for " + d, Boolean.TRUE.equals(answer.get("success")));
+            }
+            throw new AssertionError("never reached Done: " + seen);
         } finally {
             host.end();
         }

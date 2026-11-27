@@ -47,6 +47,7 @@ import mage.target.TargetCard;
 import mage.util.CardUtil;
 import mage.view.CardView;
 
+import java.io.Serializable;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -201,6 +202,21 @@ public class SeatPlayer extends HumanPlayer {
      */
     private transient Ability targetSource;
 
+    /**
+     * The pick the person just ended with Done, short of its maximum, and what
+     * was picked then. XMage's target loops ({@code TargetImpl.chooseTarget}
+     * and {@code choose}) read false from the player as "done" and true as
+     * "one more picked, ask again", but HumanPlayer loops until Done itself
+     * and answers true for a Done with enough picked — so the loop called it
+     * once more, and the person saw the same prompt with the same picks and
+     * had to press Done twice (fullpod #95). The second call is answered
+     * here, with the false the loop expects. Kept only until the next
+     * question of any kind ({@link #prepareForResponse}), so nothing but the
+     * loop's immediate second call matches. Game thread only.
+     */
+    private transient Target doneTarget;
+    private transient List<UUID> donePicks;
+
     private static final ManaType[] POOL_TYPES = {
         ManaType.WHITE, ManaType.BLUE, ManaType.BLACK, ManaType.RED, ManaType.GREEN, ManaType.COLORLESS,
     };
@@ -336,7 +352,34 @@ public class SeatPlayer extends HumanPlayer {
 
     @Override
     public boolean chooseTarget(Outcome outcome, Target target, Ability source, Game game) {
-        return askingFor(source, () -> super.chooseTarget(outcome, target, source, game));
+        return doneOnce(target, source, game, () -> askingFor(source, () -> super.chooseTarget(outcome, target, source, game)));
+    }
+
+    @Override
+    public boolean choose(Outcome outcome, Target target, Ability source, Game game, Map<String, Serializable> options) {
+        return doneOnce(target, source, game, () -> super.choose(outcome, target, source, game, options));
+    }
+
+    private boolean doneOnce(Target target, Ability source, Game game, BooleanSupplier ask) {
+        if (target == doneTarget && target.getTargets().equals(donePicks)) {
+            doneTarget = null;
+            donePicks = null;
+            return false;
+        }
+        boolean picked = ask.getAsBoolean();
+        if (picked && !game.isSimulation()
+                && !target.isChoiceCompleted(target.getAffectedAbilityControllerId(getId()), source, game, null)) {
+            doneTarget = target;
+            donePicks = new ArrayList<>(target.getTargets());
+        }
+        return picked;
+    }
+
+    @Override
+    protected void prepareForResponse(Game game) {
+        doneTarget = null;
+        donePicks = null;
+        super.prepareForResponse(game);
     }
 
     @Override
